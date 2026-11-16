@@ -194,16 +194,51 @@ export function isLinkedWorktree(root) {
   try { return fs.statSync(path.join(root, ".git")).isFile() } catch { return false }
 }
 
+const DIR_CHANGE_RE = /(?:^|[;&|\n{(]\s*)(?:cd|chdir|pushd|sl|Set-Location|Push-Location)\s+(?:-(?:Path|LiteralPath)\s+)?("[^"]*"|'[^']*'|[^\s;&|)]+)/gi
+const GIT_C_RE = /\bgit\s+-C\s+("[^"]*"|'[^']*'|\S+)/gi
+
+/** 命令里切换到的目录（cd / Push-Location / git -C 等）的原始写法。 */
+export function dirTargets(cmd) {
+  const out = []
+  for (const re of [DIR_CHANGE_RE, GIT_C_RE]) {
+    for (const m of cmd.matchAll(re)) out.push(m[1].replace(/^["']|["']$/g, ''))
+  }
+  return out
+}
+
+/**
+ * 这条命令的提交会不会落在项目仓库之外：
+ * - 项目根本不是 git 仓库（没有 .git）→ 提交不可能落在项目里；
+ * - 切到了项目外的字面路径；
+ * - 命令里先 git init 新仓库、又切换了目录（典型的临时目录实验）。
+ */
+export function commitsOutsideProject(cmd, workdir, root) {
+  const targets = dirTargets(cmd)
+  const initsRepo = /\bgit\s+(?:-\S+\s+)*init\b/i.test(cmd)
+  // 还不是 git 仓库：只有"就地 git init 再提交"会落在项目里（里程碑 0 的首次提交）。
+  if (!fs.existsSync(path.join(root, '.git'))) return !(initsRepo && targets.length === 0)
+  const outside = targets.some((t) => {
+    if (/[$%]/.test(t)) return false  // 变量路径解析不了，不在这里判断
+    const rel = path.relative(root, path.resolve(workdir, t))
+    return rel.startsWith('..') || path.isAbsolute(rel)
+  })
+  if (outside) return true
+  return targets.length > 0 && initsRepo
+}
+
 /**
  * 这次调用是不是需要审批的 git 提交/推送；是则返回项目根。
  * worktree 里的 commit 是成员在自己分支上的内部提交，不需要审批；push 一律需要。
+ * 提交落在项目仓库之外（临时目录实验等）的不管。
  */
 export function gitWriteRoot(toolName, args, cwd) {
   const cmd = commandOf(toolName, args)
   const m = cmd && cmd.match(new RegExp(GIT_WRITE_RE.source, 'gi'))
   if (!m) return null
-  const root = findTeamRoot(workdirOf(args, cwd))
+  const workdir = workdirOf(args, cwd)
+  const root = findTeamRoot(workdir)
   if (!root) return null
+  if (commitsOutsideProject(cmd, workdir, root)) return null
   const hasPush = m.some(s => /push$/i.test(s))  // 每段匹配都以 commit 或 push 结尾
   if (!hasPush && isLinkedWorktree(root)) return null
   return root

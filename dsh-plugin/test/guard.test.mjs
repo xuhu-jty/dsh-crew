@@ -11,6 +11,7 @@ const plainProj = path.join(tmp, 'plain')
 fs.mkdirSync(path.join(teamProj, '.team'), { recursive: true })
 fs.mkdirSync(path.join(teamProj, 'sub'), { recursive: true })
 fs.mkdirSync(plainProj, { recursive: true })
+fs.mkdirSync(path.join(teamProj, ".git"))  // 项目是 git 仓库
 const auth = authPath(teamProj)
 
 let failed = 0
@@ -26,7 +27,18 @@ const ok = (value = { exitCode: 0 }) => ({ isError: false, value, content: [] })
 console.log('== 刹车 1：提交审批（纯函数）')
 check('git commit → 弹窗审批', () => kindIs(decideCommit('bash', { command: 'git commit -m x' }, teamProj, 'ask'), 'ask'))
 check('git push → 弹窗审批', () => kindIs(decideCommit('pwsh', { command: 'git push origin main' }, teamProj, 'ask'), 'ask'))
-check('git -C x commit → 弹窗审批', () => kindIs(decideCommit('bash', { command: 'git -C D:/a commit -m x' }, teamProj, 'ask'), 'ask'))
+check('git -C 项目内 commit → 弹窗审批', () => kindIs(decideCommit('bash', { command: 'git -C sub commit -m x' }, teamProj, 'ask'), 'ask'))
+check('git -C 项目外 commit → 不管', () => passes(decideCommit('bash', { command: 'git -C ' + JSON.stringify(plainProj) + ' commit -m x' }, teamProj, 'ask')))
+check('cd 到项目外再提交 → 不管', () => passes(decideCommit('pwsh', { command: 'Set-Location ' + JSON.stringify(plainProj) + '; git commit -m x' }, teamProj, 'ask')))
+check('cd 到项目内子目录再提交 → 审批', () => kindIs(decideCommit('bash', { command: 'cd sub && git commit -m x' }, teamProj, 'ask'), 'ask'))
+check('临时目录实验（git init + 切目录）→ 不管', () => passes(decideCommit('pwsh', { command: '$t = Join-Path $env:TEMP x\nPush-Location $t\ngit init -q\ngit add -A; git commit -qm base' }, teamProj, 'ask')))
+check('项目根目录首次 git init + commit → 审批', () => kindIs(decideCommit('bash', { command: 'git init && git add -A && git commit -m init' }, teamProj, 'ask'), 'ask'))
+{
+  const noGit = path.join(tmp, 'nogit')
+  fs.mkdirSync(path.join(noGit, '.team'), { recursive: true })
+  check('项目还不是 git 仓库 → 提交不可能落在项目里，不管', () => passes(decideCommit('bash', { command: 'git commit -m x' }, noGit, 'ask')))
+  check('项目还不是 git 仓库，就地 git init 后首次提交 → 审批', () => kindIs(decideCommit('pwsh', { command: 'git init; git add -A; git commit -m "M0"' }, noGit, 'ask'), 'ask'))
+}
 check('链式命令里的 commit → 弹窗审批', () => kindIs(decideCommit('bash', { command: 'git add . && git commit -m x' }, teamProj, 'ask'), 'ask'))
 check('子目录里也审批', () => kindIs(decideCommit('bash', { command: 'git commit -m x' }, path.join(teamProj, 'sub'), 'ask'), 'ask'))
 check('workdir 指向项目时审批', () => kindIs(decideCommit('bash', { command: 'git commit -m x', workdir: teamProj }, plainProj, 'ask'), 'ask'))
