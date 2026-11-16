@@ -100,3 +100,7 @@ dsh-plugin/                 刹车插件 project-team-guard（含离线测试）
 - [pbakaus/impeccable](https://github.com/pbakaus/impeccable)：PRODUCT.md / DESIGN.md、critique / audit。
 - [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)（MIT）：复用阶梯、"省代码不省校验"。
 - [Yun-BaiBai/plain-to-meta](https://github.com/Yun-BaiBai/plain-to-meta)（MIT）：请求升级、方法钥匙、证伪与一手证据。
+
+## 许可证
+
+[MIT](LICENSE)。
