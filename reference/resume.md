@@ -40,7 +40,7 @@
 3. 更新 STATE.md 和状态卡：当前阶段、下一步、等用户回答的问题、团队表（全部"已退场"或写明交接单路径）、"上次轮换：<时间>，原因"。
 4. 用 `schedule_create` 开新会话：`target` 填 `new_once`，`rrule` 设成约 1 分钟后的一次性触发（`DTSTART;TZID=Asia/Shanghai:<YYYYMMDDTHHMMSS>` 换行 `RRULE:FREQ=DAILY;COUNT=1`），`title` 写"接续 <项目名>"，`prompt` 写：
    ```
-   用 project-team skill 接着做 <项目绝对路径>。按 reference/resume.md 的恢复顺序读状态卡、.team/STATE.md、PROJECT.md、.team/TASKS-snapshot.md，用快照重建任务板，然后继续。
+   用 crew skill 接着做 <项目绝对路径>。按 reference/resume.md 的恢复顺序读状态卡、.team/STATE.md、PROJECT.md、.team/TASKS-snapshot.md，用快照重建任务板，然后继续。
    ```
 5. 告诉用户一句话：已开新会话"接续 <项目名>"，请打开它，并在模型名菜单里打开"启用智能体团队协作"。然后结束本轮：不再派活、不再改文件、不再提交，避免两个 Lead 同时改同一个项目。
 

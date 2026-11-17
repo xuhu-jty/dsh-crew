@@ -4,8 +4,8 @@
 
 ## 准备
 
-1. 插件已装进 desktop 配置并重启 DHS（插件列表里能看到 `project-team-guard`）。
-2. 演示项目：一个空的 git 仓库，项目级 skill 放在 `<项目>\.dsh\skills\project-team`（或用全局安装的 skill）。
+1. 插件已装进 desktop 配置并重启 DHS（插件列表里能看到 `crew-guard`）。
+2. 演示项目：一个空的 git 仓库，项目级 skill 放在 `<项目>\.dsh\skills\crew`（或用全局安装的 skill）。
 3. 新建会话，工作目录选演示项目，打开"启用智能体团队协作"，**权限选会询问的模式**（例如 workspace-write）。
 
 ## 跑一个完整的小项目
@@ -25,7 +25,7 @@
 | 3 | 地基 | 建 `.team/STATE.md`、`.team/guard.json`（有 verify 命令）、状态卡 `AGENTS.local.md`、`PROJECT.md`；有一条 verify 命令能跑 | foundation §1、§6 |
 | 4 | 开发 | 改代码后没跑 verify 就想收尾 → 被拉回来先跑 verify | **刹车 3** |
 | 5 | 开发 | 改了 STATE.md 没同步状态卡 → 被拉回来同步 | **刹车 4** |
-| 6 | 提交 | 想提交时弹审批窗，理由写着 project-team；你点允许后，同一轮重试不再弹 | **刹车 1** |
+| 6 | 提交 | 想提交时弹审批窗，理由写着 crew；你点允许后，同一轮重试不再弹 | **刹车 1** |
 | 7 | 验收 | 给你演示材料：怎么运行、逐条对照验收标准、复盘、遗留问题 | gates 里程碑关卡 |
 | 8 | 文档 | 跑了 `scripts/doc-check.mjs` 且通过；`.team/` 里过程文件已清理；`PROJECT.md` 有履历 | docs-and-retro |
 | 9 | 交付 | 交付报告含"未验证""刹车""复盘沉淀" | delivery-report |
@@ -42,4 +42,4 @@
 
 ## 读日志
 
-会话日志在 `%USERPROFILE%\.dsh\sessions\--<项目路径>--\session-*\session.v4.jsonl.zstd`（多段 zstd 压缩）。`approval/asked` 事件是弹窗；`[project-team 刹车]` 开头的工具结果和 `project-team-guard` 来源的消息是插件介入。
+会话日志在 `%USERPROFILE%\.dsh\sessions\--<项目路径>--\session-*\session.v4.jsonl.zstd`（多段 zstd 压缩）。`approval/asked` 事件是弹窗；`[crew 刹车]` 开头的工具结果和 `crew-guard` 来源的消息是插件介入。

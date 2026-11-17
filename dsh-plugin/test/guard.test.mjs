@@ -50,7 +50,7 @@ check('审批策略"从不询问" → 直接拒绝并说明', () => {
 check('本轮已批准过 → 不再弹窗', () => passes(decideCommit('bash', { command: 'git commit -m x' }, teamProj, 'ask', new Set([teamProj]))))
 check('git status 不干预', () => passes(decideCommit('bash', { command: 'git status' }, teamProj, 'ask')))
 check('git log --grep commit 不干预', () => passes(decideCommit('bash', { command: 'git log --grep commit' }, teamProj, 'ask')))
-check('非 project-team 项目不干预', () => passes(decideCommit('bash', { command: 'git commit -m x' }, plainProj, 'ask')))
+check('非 crew 项目不干预', () => passes(decideCommit('bash', { command: 'git commit -m x' }, plainProj, 'ask')))
 {
   const wt = path.join(tmp, 'proj-wt-builder')
   fs.mkdirSync(path.join(wt, '.team'), { recursive: true })

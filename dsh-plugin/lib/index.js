@@ -1,4 +1,4 @@
-// project-team-guard：project-team 的硬刹车。只在带 .team/ 目录的项目里生效，其他项目完全不受影响。
+// crew-guard：crew 的硬刹车。只在带 .team/ 目录的项目里生效，其他项目完全不受影响。
 //
 // 刹车 1 提交审批：git commit / git push 需要用户批准。
 //   - 用户本人创建的 .team/commit-authorized 存在 → 放行（里程碑验收后的整批授权）。
@@ -19,7 +19,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-export const name = 'project-team-guard'
+export const name = 'crew-guard'
 export const inject = ['tools', 'workingDirectory']
 
 export const AUTH_FILE = 'commit-authorized'
@@ -94,7 +94,7 @@ function workdirOf(args, cwd) {
   return args && typeof args === 'object' && typeof args.workdir === 'string' ? path.resolve(cwd, args.workdir) : cwd
 }
 
-/** 这次调用可能影响的 project-team 项目根（命令的工作目录、写文件的目标）。 */
+/** 这次调用可能影响的 crew 项目根（命令的工作目录、写文件的目标）。 */
 export function rootsTouched(toolName, args, cwd) {
   const roots = new Set()
   const r1 = findTeamRoot(workdirOf(args, cwd))
@@ -143,38 +143,38 @@ export function commandSucceeded(result) {
 
 export const MSG = {
   authWrite: [
-    '[project-team 刹车] 不允许 agent 创建或修改提交授权文件 .team/commit-authorized。',
+    '[crew 刹车] 不允许 agent 创建或修改提交授权文件 .team/commit-authorized。',
     '这个文件只能由用户本人创建。需要提交时直接执行 git commit，会弹窗请用户批准。',
   ].join('\n'),
   forged: [
-    '[project-team 刹车] 检测到这次操作创建或改动了 .team/commit-authorized，已判定为 agent 伪造授权并删除。',
+    '[crew 刹车] 检测到这次操作创建或改动了 .team/commit-authorized，已判定为 agent 伪造授权并删除。',
     '不要再尝试以任何方式生成这个文件。需要提交时直接执行 git commit，会弹窗请用户批准；',
     '把这次发生的事如实告诉用户。（如果确实是用户刚好在这时手动创建的，请用户重新创建一次。）',
   ].join('\n'),
   neverPolicy: [
-    '[project-team 刹车] 提交需要用户批准，但当前会话的审批策略是"从不询问"，无法弹窗，提交已拒绝。',
+    '[crew 刹车] 提交需要用户批准，但当前会话的审批策略是"从不询问"，无法弹窗，提交已拒绝。',
     '现在该做的：停下提交，告诉用户做完了什么、证据在哪，并请用户二选一：',
     '① 在 DHS 权限设置里切换到会询问的模式，再让你提交（会弹窗确认）；② 用户本人创建 .team/commit-authorized。',
     '不要尝试绕过。',
   ].join('\n'),
-  askReason: 'project-team：git 提交/推送需要用户批准（项目没有整批提交授权 .team/commit-authorized）',
+  askReason: 'crew：git 提交/推送需要用户批准（项目没有整批提交授权 .team/commit-authorized）',
   askDisplay: {
-    en: 'project-team: this git commit/push needs your approval.',
-    zh: 'project-team：agent 想执行 git 提交/推送，需要你批准。',
+    en: 'crew: this git commit/push needs your approval.',
+    zh: 'crew：agent 想执行 git 提交/推送，需要你批准。',
   },
   verifyMissing: (root, verify) => [
-    `[project-team 刹车] 这一轮你改动了 ${root} 里的文件，但改动之后还没有跑通验证命令（${verify}）。`,
+    `[crew 刹车] 这一轮你改动了 ${root} 里的文件，但改动之后还没有跑通验证命令（${verify}）。`,
     '先运行它并看结果：通过了再收尾；不通过就修，修不了就把失败输出如实报告给用户。',
     '不要把"没跑"写成"通过"。',
   ].join('\n'),
   cardStale: root => [
-    `[project-team 刹车] 这一轮 ${root}/.team/STATE.md 改了，但状态卡 ${CARD_FILE} 没跟着更新。`,
+    `[crew 刹车] 这一轮 ${root}/.team/STATE.md 改了，但状态卡 ${CARD_FILE} 没跟着更新。`,
     '状态卡会在每次开工和上下文压缩后自动注入给所有 agent；它过期，下一个接手的人就会按旧状态干活。',
     '请把当前阶段、已拍板的事、授权与禁止、下一步同步到状态卡（保持 40 行以内），再收尾。',
   ].join('\n'),
   cardMissing: root => [
-    `[project-team 提醒] 项目 ${root} 还没有状态卡 ${CARD_FILE}。`,
-    '按 project-team skill 的 templates/state-card.md 建一张：它会在开工和压缩后自动注入，防止忘掉已拍板的事。',
+    `[crew 提醒] 项目 ${root} 还没有状态卡 ${CARD_FILE}。`,
+    '按 crew skill 的 templates/state-card.md 建一张：它会在开工和压缩后自动注入，防止忘掉已拍板的事。',
   ].join('\n'),
 }
 
@@ -282,7 +282,7 @@ function makeNotice(text, summary) {
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'project-team-guard', form: 'notice', summary },
+    source: { kind: 'crew-guard', form: 'notice', summary },
   })
 }
 

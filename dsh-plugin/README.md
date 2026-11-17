@@ -1,6 +1,6 @@
-# project-team-guard
+# crew-guard
 
-project-team skill 的刹车插件。只在带 `.team/` 目录的项目里生效，其他项目完全不受影响。只依赖 Node 内置模块。
+crew skill 的刹车插件。只在带 `.team/` 目录的项目里生效，其他项目完全不受影响。只依赖 Node 内置模块。
 
 ## 四个刹车
 

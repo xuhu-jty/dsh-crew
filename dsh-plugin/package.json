@@ -1,7 +1,7 @@
 {
-  "name": "project-team-guard",
+  "name": "crew-guard",
   "version": "0.1.0",
-  "description": "project-team 硬刹车：提交需用户批准、授权文件防伪造、收工前必须跑通验证、状态卡防过期",
+  "description": "crew 硬刹车：提交需用户批准、授权文件防伪造、收工前必须跑通验证、状态卡防过期",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

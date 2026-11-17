@@ -1,5 +1,5 @@
-# project-team-guard：把守卫挂到 DHS 的工具流水线上。
+# crew-guard：把守卫挂到 DHS 的工具流水线上。
 - insert:
-    - id: project-team-guard
-      name: 'project-team-guard'
+    - id: crew-guard
+      name: 'crew-guard'
       inject: [tools, workingDirectory]

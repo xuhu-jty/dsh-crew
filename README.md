@@ -1,25 +1,39 @@
-# project-team：DHS 项目团队
+# Crew：带 AI 把项目做完
 
 让 DeepSeek Harness（DHS）的 Lead 按项目需要组一支 Agent Team，把一个完整项目从读懂需求做到可交付。由两部分组成：
 
 - **skill**（本目录）：判断方法。读懂需求、出方案、拆里程碑、派活、验收、复盘。规则按"触发表"在关键时刻生效，不一次全塞进上下文。
-- **刹车插件 `project-team-guard`**（`dsh-plugin/`）：文字管不住的事交给代码。只在带 `.team/` 目录的项目里生效。
+- **刹车插件 `crew-guard`**（`dsh-plugin/`）：文字管不住的事交给代码。只在带 `.team/` 目录的项目里生效。
 
 流程本身见 [SKILL.md](SKILL.md)。
+
+## 为什么写它
+
+用 AI 写代码最常见的翻车：你说一句话，它几秒就说"做完了"，打开一看，要的不是这个、功能缺一块、一出错满屏英文。AI 不是不够聪明，而是你没说的部分它只能猜。Crew 不让它猜：
+
+1. **先问清楚**：把一句话拆成必须讲清的问题，用大白话问你，每题附推荐答案。
+2. **需求卡**：回答汇成一张写清"做完长什么样"的卡，你拍板才开工。
+3. **四道关卡**：评审（故意改坏代码，看测试会不会变红）、证据（交付必须带跑过的测试和命令）、刹车（提交要你批准，写进插件硬拦）、记忆（定过的事进状态卡，踩过的坑变成规则）。
+
+你不用看懂代码，只在这几个路口拍板。
+
+[![Crew 宣传片（约 100 秒，点开播放）](media/crew-promo-poster.jpg)](media/crew-promo.mp4)
+
+片里的数字都来自一次真实试跑：测试 10/10 全绿却被评审退回、最终 17/17 通过、agent 被要求伪造提交授权时拒绝。
 
 ## 安装
 
 ### 1. skill
 
 ```
-git clone https://github.com/xuhu-jty/dsh-project-team.git %USERPROFILE%\.dsh\skills\project-team
+git clone https://github.com/xuhu-jty/dsh-crew.git %USERPROFILE%\.dsh\skills\crew
 ```
 
-PowerShell 里把 `%USERPROFILE%` 换成 `$env:USERPROFILE`。更新：`git -C %USERPROFILE%\.dsh\skills\project-team pull`。DHS 会自动发现新 skill。
+PowerShell 里把 `%USERPROFILE%` 换成 `$env:USERPROFILE`。更新：`git -C %USERPROFILE%\.dsh\skills\crew pull`。DHS 会自动发现新 skill。
 
 ### 2. 刹车插件
 
-DHS 侧栏 → 插件 → 从本地路径安装，填 skill 目录下的 `dsh-plugin` 的绝对路径（例如 `C:\Users\<你>\.dsh\skills\project-team\dsh-plugin`），然后重启 DHS。
+DHS 侧栏 → 插件 → 从本地路径安装，填 skill 目录下的 `dsh-plugin` 的绝对路径（例如 `C:\Users\<你>\.dsh\skills\crew\dsh-plugin`），然后重启 DHS。
 
 插件页安装失败、提示找不到 `pnpm.mjs` 时，是 DHS 安装目录里的运行环境缺失（`resources\runtime` 为空），重装 DHS 即可恢复。也可以在 PowerShell 里手动装（先备份 profile 目录下的 `package.json` 和 `pnpm-lock.yaml`）：
 
@@ -28,11 +42,11 @@ cd $env:USERPROFILE\.dsh\profiles\desktop
 node --expose-internals $env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\bin\pnpm.mjs add "file:<dsh-plugin 绝对路径>"
 ```
 
-再把 `"project-team-guard"` 加进同一个 `package.json` 的 `dsh.profile.bundles` 列表，重启 DHS。装进去的是副本，插件源码更新后要重新安装（先 `remove project-team-guard` 再 `add`）。
+再把 `"crew-guard"` 加进同一个 `package.json` 的 `dsh.profile.bundles` 列表，重启 DHS。装进去的是副本，插件源码更新后要重新安装（先 `remove crew-guard` 再 `add`）。
 
 ### 3. 团队协作默认开启（推荐）
 
-DHS 的"启用智能体团队协作"默认每个新会话都是关的。在 `%USERPROFILE%.dshprofilesdesktopcordis.patch.yml` 末尾加上（先备份；`maxTasks: 256` 是原值，必须一起写上，因为补丁会整体替换这一项配置）：
+DHS 的"启用智能体团队协作"默认每个新会话都是关的。在 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml` 末尾加上（先备份；`maxTasks: 256` 是原值，必须一起写上，因为补丁会整体替换这一项配置）：
 
 ```yaml
 - id: agent-team
@@ -44,6 +58,14 @@ DHS 的"启用智能体团队协作"默认每个新会话都是关的。在 `%US
 
 之后所有新会话一开始就是团队模式（已有会话保持原来的选择）。代价：不做项目的会话也会带上团队工具。
 
+### 从旧名 project-team 升级
+
+本项目原名 project-team（仓库 dsh-project-team，GitHub 会自动跳转到新地址）。已装旧版的：
+
+1. 把 `%USERPROFILE%\.dsh\skills\project-team` 改名为 `crew`，进去执行 `git remote set-url origin https://github.com/xuhu-jty/dsh-crew.git` 再 `git pull`。
+2. 插件：在 profile 目录 `remove project-team-guard`，再按上面第 2 步装 `crew-guard`，并把 `package.json` 的 bundles 里的 `project-team-guard` 换成 `crew-guard`，重启 DHS。
+3. 进行中的项目：状态卡 `AGENTS.local.md` 里写的 "project-team skill" 改成 "crew skill"。`.team/` 目录和里面的文件不用动。
+
 ### 4. 配套 skill（可选，装了会自动用）
 
 `impeccable`（界面）、`ponytail` / `ponytail-review`（精简实现与代码审查）、`plain-to-meta`（中大项目的请求升级）。
@@ -51,9 +73,9 @@ DHS 的"启用智能体团队协作"默认每个新会话都是关的。在 `%US
 ## 使用
 
 1. 新建会话。没做第 3 步的话，点输入框右下角的模型名 → 打开**启用智能体团队协作**（忘了开 Lead 会提醒）。权限建议选会询问的模式，这样提交会弹窗请你批准；Windows 上"工作区内修改"可能被文件权限拦住，Lead 会问你怎么处理。
-2. 说"用项目团队做 <你的项目>"，附上需求、材料或代码库路径。
+2. 说"用 crew 做 <你的项目>"（或"用项目团队做……"），附上需求、材料或代码库路径。
 3. Lead 会在这些节点停下来等你拍板：需求确认 → 方案与里程碑 → 设计方向（有界面时）→ **每个里程碑的验收演示** → 最终交付。小项目走轻量通道，前两个节点合并成一次。
-4. 中断了、隔天再来：说"用项目团队接着做 <项目路径>"。
+4. 中断了、隔天再来：说"用 crew 接着做 <项目路径>"。
 5. 大项目每个里程碑验收后，Lead 会开一个新会话"接续 <项目名>"，你打开它并开启团队协作开关即可。
 
 ## 刹车做什么
@@ -91,7 +113,8 @@ reference/                  到触发点才读的细节：resume / intake / plan
 roles/*.md                  9 份角色合同：勘察、产品、架构、设计、实现、评审、测试、文档、合规
 templates/*.md              状态卡、STATE.md、PROJECT.md、任务卡、成员 brief、交接单、交付报告
 scripts/doc-check.mjs       文档检查（里程碑关卡用）
-dsh-plugin/                 刹车插件 project-team-guard（含离线测试）
+dsh-plugin/                 刹车插件 crew-guard（含离线测试）
+media/                      宣传片与封面
 ```
 
 ## 方法来源（借方法，不照抄文本）
