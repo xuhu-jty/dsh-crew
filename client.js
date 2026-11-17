@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
     /**
      * Parse the machine-readable header of `.team/STATE.md` (crew templates/STATE.md).
      * @param {string} text - whole file text.
-     * @returns {{ok: true, stage: string, milestone: string, updated: string, waiting: {kind: string, text: string}[]} | {ok: false}}
+     * @returns {{ok: true, stage: string, milestone: string, updated: string, confirmed: {date: string, fingerprint: string} | null, waiting: {kind: string, text: string}[]} | {ok: false}}
      */
     function parseStateHeader(text) {
       const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(String(text ?? ''))
@@ -55,7 +55,82 @@ window.__ModuleLoader__.load({
         inWaiting = kv[1] === 'waiting'
       }
       if (!STAGES.includes(fields.stage)) return { ok: false }
-      return { ok: true, stage: fields.stage, milestone: fields.milestone ?? 'none', updated: fields.updated ?? '', waiting }
+      const confirmed = /^(\d{4}-\d{2}-\d{2})\s+([0-9a-f]{8})$/.exec(String(fields.confirmed ?? '').trim())
+      return { ok: true, stage: fields.stage, milestone: fields.milestone ?? 'none', updated: fields.updated ?? '', confirmed: confirmed ? { date: confirmed[1], fingerprint: confirmed[2] } : null, waiting }
+    }
+
+    /** The requirement sheet: the first five sections of PROJECT.md (crew lib/requirements.js). */
+    const REQUIREMENT_SECTIONS = ['目的', '用户与场景', '成功标准', '范围', '假设']
+
+    /**
+     * Fingerprint of the requirement sections; same rules as crew lib/requirements.js (blank
+     * lines, line-end spacing and ticked criteria do not count). null when none exists.
+     */
+    function requirementsFingerprint(text) {
+      const sections = new Map()
+      let current = null
+      for (const raw of String(text ?? '').split(/\r?\n/)) {
+        const heading = /^(#{1,2})\s+(.+)$/.exec(raw.trim())
+        if (heading) {
+          const name = heading[1] === '##' ? heading[2].replace(/[（(：:].*$/, '').trim() : ''
+          current = REQUIREMENT_SECTIONS.includes(name) ? name : null
+          if (current && !sections.has(current)) sections.set(current, [])
+          continue
+        }
+        const line = raw.trim().replace(/^([-*]\s+)\[[xX ]\]/, '$1[ ]')
+        if (current && line !== '') sections.get(current).push(line)
+      }
+      if (sections.size === 0) return null
+      const canonical = REQUIREMENT_SECTIONS.filter(name => sections.has(name)).map(name => `## ${name}\n${sections.get(name).join('\n')}`).join('\n')
+      let hash = 0x811c9dc5
+      for (let i = 0; i < canonical.length; i += 1) {
+        hash ^= canonical.charCodeAt(i)
+        hash = Math.imul(hash, 0x01000193) >>> 0
+      }
+      return hash.toString(16).padStart(8, '0')
+    }
+
+    /** Success criteria (`- [ ]` / `- [x]` lines under "## 成功标准"). */
+    function successCriteria(text) {
+      const out = []
+      let inside = false
+      for (const raw of String(text ?? '').split(/\r?\n/)) {
+        const heading = /^(#{1,2})\s+(.+)$/.exec(raw.trim())
+        if (heading) { inside = heading[1] === '##' && heading[2].replace(/[（(：:].*$/, '').trim() === '成功标准'; continue }
+        const item = inside ? /^[-*]\s+\[([ xX])\]\s+(.+)$/.exec(raw.trim()) : null
+        if (item) out.push({ done: item[1] !== ' ', text: item[2].replace(/\*\*|`/g, '') })
+      }
+      return out
+    }
+
+    /** What the views need from PROJECT.md. */
+    function parseProject(text) {
+      return { goal: parseGoal(text), fingerprint: requirementsFingerprint(text), criteria: successCriteria(text) }
+    }
+
+    /**
+     * Where the requirement sheet stands: 'confirmed', 'changed' (confirmed, then edited),
+     * 'unconfirmed', or null when there is no sheet to confirm (no header or no sections).
+     */
+    function requirementsStatus(header, project) {
+      if (!header?.ok || !project?.fingerprint) return null
+      if (!header.confirmed) return 'unconfirmed'
+      return header.confirmed.fingerprint === project.fingerprint ? 'confirmed' : 'changed'
+    }
+
+    /**
+     * The header the views show: a changed requirement sheet adds one "decide" item, so the
+     * row dot, the hover line and the projects page pick it up like any other waiting item.
+     * Never confirmed adds nothing: old projects would otherwise all light up at once.
+     */
+    function withRequirements(header, project) {
+      if (requirementsStatus(header, project) !== 'changed') return header
+      return { ...header, waiting: [...header.waiting, { kind: 'decide', text: '', code: 'requirementsChanged' }] }
+    }
+
+    /** A waiting item's sentence: the lead's own words, or plugin copy for items the plugin adds. */
+    function waitText(item, t) {
+      return item.code ? t(item.code) : item.text
     }
 
     /** Case-insensitive comparison key for a Windows or POSIX directory path. */
@@ -122,7 +197,7 @@ window.__ModuleLoader__.load({
       for (const project of projects) {
         const header = headers.get(project.key)
         if (!project.leadId || !header?.ok) continue
-        for (const item of header.waiting) out.push({ project: project.title, leadId: project.leadId, kind: item.kind, text: item.text })
+        for (const item of header.waiting) out.push({ project: project.title, leadId: project.leadId, kind: item.kind, text: item.text, code: item.code })
       }
       return out.sort((a, b) => WAIT_ORDER.indexOf(a.kind) - WAIT_ORDER.indexOf(b.kind) || a.project.localeCompare(b.project))
     }
@@ -306,7 +381,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const model = { parseStateHeader, pathKey, isScratchPath, buildProjects, leadIdsByProject, collectWaiting, recentProjects, tidyCandidates, emptyFolders, relativeTime, stripTitle, pipelineContext, taskColumns, taskState, stageStrip, parseGoal, firstParagraph, columnCards, ownerInfo, STAGES, WAIT_ORDER, PIPELINE }
+    const model = { parseStateHeader, pathKey, isScratchPath, buildProjects, leadIdsByProject, collectWaiting, recentProjects, tidyCandidates, emptyFolders, relativeTime, stripTitle, pipelineContext, taskColumns, taskState, stageStrip, parseGoal, requirementsFingerprint, successCriteria, parseProject, requirementsStatus, withRequirements, firstParagraph, columnCards, ownerInfo, STAGES, WAIT_ORDER, PIPELINE }
 
     // ------------------------------------------------------------------ copy
 
@@ -359,6 +434,13 @@ window.__ModuleLoader__.load({
       none: '—',
       goalLabel: '目标',
       noGoal: '还没有写下目标',
+      requirementsChanged: '需求改过了，等你重新确认',
+      sheetConfirmed: '需求已确认 · {date}',
+      sheetChanged: '确认后改过',
+      sheetUnconfirmed: '需求还没确认',
+      criteriaLine: '成功标准 {done}/{total} 条已做到',
+      sheetChangedHint: '确认之后，PROJECT.md 里的目的、用户与场景、成功标准、范围或假设被改过。看过没问题，在负责人对话里说“需求确认”。',
+      sheetUnconfirmedHint: '看过 PROJECT.md 里的目的、用户与场景、成功标准、范围和假设没问题，在负责人对话里说“需求确认”。',
       doneSteps: '✓ 已完成 {n} 步',
       stageUnknown: '阶段未知',
       tasksTitle: '任务',
@@ -438,6 +520,13 @@ window.__ModuleLoader__.load({
       none: '—',
       goalLabel: 'Goal',
       noGoal: 'No goal written down yet',
+      requirementsChanged: 'The requirements changed and need your confirmation again',
+      sheetConfirmed: 'Requirements confirmed · {date}',
+      sheetChanged: 'Changed since you confirmed',
+      sheetUnconfirmed: 'Requirements not confirmed yet',
+      criteriaLine: 'Success criteria: {done} of {total} met',
+      sheetChangedHint: 'Since you confirmed, the goal, users, success criteria, scope or assumptions in PROJECT.md changed. If they look right, say "requirements confirmed" in the lead conversation.',
+      sheetUnconfirmedHint: 'Read the goal, users, success criteria, scope and assumptions in PROJECT.md. If they look right, say "requirements confirmed" in the lead conversation.',
       doneSteps: '✓ {n} steps done',
       stageUnknown: 'Stage unknown',
       tasksTitle: 'Tasks',
@@ -483,11 +572,12 @@ window.__ModuleLoader__.load({
 
     /**
      * Project files read through a project's lead session, shared by the row dots, the page and
-     * the pipeline view: parsed STATE.md headers and the PROJECT.md goal. Cached for one minute.
+     * the pipeline view: parsed STATE.md headers and PROJECT.md (goal, requirement sheet).
+     * Cached for one minute. Headers come back with `withRequirements` applied.
      */
     function createHeaderStore(remote) {
       const entries = new Map()
-      const goals = new Map()
+      const projects = new Map()
       const listeners = new Set()
       let version = 0
       const notify = () => { version += 1; for (const listener of listeners) listener() }
@@ -495,30 +585,53 @@ window.__ModuleLoader__.load({
         const separator = String(cwd).includes('\\') ? '\\' : '/'
         return [String(cwd).replace(/[\\/]+$/, ''), ...parts].join(separator)
       }
-      const load = (map, key, sessionId, path, parse, field) => {
+      const load = (map, key, sessionId, path, parse, field, force) => {
         const current = map.get(key)
-        if (current && (current.loading || Date.now() - current.at < HEADER_TTL)) return
+        if (current && (current.loading || (!force && Date.now() - current.at < HEADER_TTL))) return
         map.set(key, { ...current, loading: true, at: Date.now() })
         Promise.resolve()
           .then(() => remote.workspaceFiles.read(sessionId, path, { offset: 1 }))
           .then(result => (result && result.ok ? parse(result.value?.text ?? '') : parse('')))
           .catch(() => parse(''))
-          .then(value => { map.set(key, { [field]: value, loading: false, at: Date.now() }); notify() })
+          .then(value => {
+            const changed = !(field in (current ?? {})) || JSON.stringify(current[field]) !== JSON.stringify(value)
+            map.set(key, { [field]: value, loading: false, at: Date.now() })
+            if (changed) notify()
+          })
+      }
+      const known = new Map()
+      const ensure = (key, cwd, sessionId, force = false) => {
+        known.set(key, [cwd, sessionId])
+        load(entries, key, sessionId, projectFile(cwd, '.team', 'STATE.md'), parseStateHeader, 'header', force)
+        load(projects, key, sessionId, projectFile(cwd, 'PROJECT.md'), parseProject, 'project', force)
+      }
+      // While any crew view is on screen, re-read the known projects once a minute, so an edit
+      // made in the conversation (or by hand) shows up without navigating. Views redraw only
+      // when a parsed value actually changed.
+      let timer = null
+      const refresh = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+        for (const [key, [cwd, sessionId]] of known) ensure(key, cwd, sessionId, true)
       }
       return {
-        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+        subscribe(listener) {
+          listeners.add(listener)
+          if (timer === null && typeof setInterval === 'function') timer = setInterval(refresh, HEADER_TTL)
+          return () => {
+            listeners.delete(listener)
+            if (listeners.size === 0 && timer !== null) { clearInterval(timer); timer = null }
+          }
+        },
         version: () => version,
-        get: key => entries.get(key)?.header,
-        goal: key => goals.get(key)?.goal ?? null,
+        get: key => withRequirements(entries.get(key)?.header, projects.get(key)?.project),
+        project: key => projects.get(key)?.project ?? null,
         snapshot() {
           const out = new Map()
-          for (const [key, entry] of entries) if (entry.header) out.set(key, entry.header)
+          for (const [key, entry] of entries) if (entry.header) out.set(key, withRequirements(entry.header, projects.get(key)?.project))
           return out
         },
-        /** Load `<cwd>/.team/STATE.md` through the lead session. */
-        ensure(key, cwd, sessionId) { load(entries, key, sessionId, projectFile(cwd, '.team', 'STATE.md'), parseStateHeader, 'header') },
-        /** Load the goal sentence from `<cwd>/PROJECT.md`. */
-        ensureGoal(key, cwd, sessionId) { load(goals, key, sessionId, projectFile(cwd, 'PROJECT.md'), parseGoal, 'goal') },
+        /** Load `<cwd>/.team/STATE.md` and `<cwd>/PROJECT.md` through the lead session. */
+        ensure(key, cwd, sessionId) { ensure(key, cwd, sessionId) },
       }
     }
 
@@ -596,7 +709,7 @@ window.__ModuleLoader__.load({
         const rest = header.waiting.length - shown.length
         return h('div', { style: S.hover },
           h('div', { style: S.hoverStrong }, fill(t('waitingLine'), { stage: t(`stage_${header.stage}`), n: header.waiting.length })),
-          ...shown.map((item, index) => h('div', { key: index }, `${t(`kind_${item.kind}`)}：${item.text}`)),
+          ...shown.map((item, index) => h('div', { key: index }, `${t(`kind_${item.kind}`)}：${waitText(item, t)}`)),
           rest > 0 ? h('div', null, fill(t('moreWaiting'), { n: rest })) : null,
         )
       }
@@ -739,7 +852,7 @@ window.__ModuleLoader__.load({
           h('h1', { style: S.h1 }, t('title')),
           h(Block, { t, title: t('waitingTitle'), items: waiting, render: (item, index) => h('div', { key: index, style: { ...S.row, ...(index === 0 ? S.rowFirst : null) } },
             h('span', { style: S.kind }, t(`kind_${item.kind}`)),
-            h('span', { style: S.grow, title: item.text }, `${item.project} · ${item.text}`),
+            h('span', { style: S.grow, title: waitText(item, t) }, `${item.project} · ${waitText(item, t)}`),
             h('button', { type: 'button', style: S.button, onClick: () => open(item.leadId) }, t('handle')),
           ) }),
           h(Block, { t, title: t('recentTitle'), items: recent, render: (project, index) => {
@@ -770,6 +883,12 @@ window.__ModuleLoader__.load({
       // Bottom padding keeps the last row clear of DHS's docked composer.
       wrap: { boxSizing: 'border-box', height: '100%', overflow: 'auto', padding: '16px 24px 160px', background: v('bg-base'), color: v('label-primary'), display: 'flex', flexDirection: 'column', gap: '16px' },
       goal: { display: 'flex', gap: '8px', alignItems: 'baseline', font: font('s-strong-14') },
+      sheet: { display: 'flex', flexDirection: 'column', gap: '6px' },
+      sheetPill: { confirmed: { color: v('state-success-primary'), borderColor: v('state-success-primary') }, changed: { color: v('state-warn-label'), borderColor: v('state-warn-primary') }, unconfirmed: {} },
+      sheetWarn: { borderColor: v('state-warn-primary') },
+      criteriaToggle: { alignSelf: 'flex-start', appearance: 'none', border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: v('label-secondary'), font: font('xxs-12') },
+      criteria: { margin: 0, paddingLeft: '16px', listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '2px', font: font('xxs-12'), color: v('label-primary') },
+      criterionDone: { color: v('label-tertiary') },
       goalLabel: { flex: '0 0 auto', whiteSpace: 'nowrap', color: v('label-tertiary'), font: font('xxs-12') },
       strip: { display: 'flex', gap: '4px', alignItems: 'center', flexWrap: 'wrap', font: font('xxs-12') },
       step: { border: `1px solid ${v('border-l1')}`, borderRadius: '999px', padding: '2px 10px', color: v('label-tertiary'), background: 'none', font: 'inherit' },
@@ -803,6 +922,7 @@ window.__ModuleLoader__.load({
         const outline = typeof props.useProjection === 'function' ? props.useProjection('turnOutline') : undefined
         const [picked, setPicked] = useState(null)
         const [showDone, setShowDone] = useState(false)
+        const [showCriteria, setShowCriteria] = useState(false)
         const byId = sessions?.byId ?? {}
         const context = pipelineContext(sessionId, byId)
         const leadRow = context.leadId ? byId[context.leadId] : null
@@ -810,7 +930,6 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           if (!key) return
           store.ensure(key, leadRow.cwd, leadRow.id)
-          store.ensureGoal(key, leadRow.cwd, leadRow.id)
         }, [key, leadRow, store])
         useSyncExternalStore(store.subscribe, store.version)
         const now = Date.now()
@@ -843,9 +962,13 @@ window.__ModuleLoader__.load({
         const selectedId = picked ?? (mine.size > 0 ? [...mine][0] : null)
         const selected = selectedId ? taskById.get(selectedId) : null
         const header = key ? store.get(key) : undefined
-        const goal = key ? store.goal(key) : null
+        const project = key ? store.project(key) : null
+        const goal = project?.goal ?? null
         const strip = header?.ok ? stageStrip(header.stage) : null
-        const waiting = header?.ok ? [...header.waiting].sort((a, b) => WAIT_ORDER.indexOf(a.kind) - WAIT_ORDER.indexOf(b.kind)) : []
+        const sheet = requirementsStatus(header, project)
+        const criteria = project?.criteria ?? []
+        // The sheet below already says when the requirements changed; do not list it twice.
+        const waiting = header?.ok ? header.waiting.filter(item => item.code !== 'requirementsChanged').sort((a, b) => WAIT_ORDER.indexOf(a.kind) - WAIT_ORDER.indexOf(b.kind)) : []
 
         const stripView = strip === null
           ? h('div', { style: P.strip }, h('span', { style: P.step }, t('stageUnknown')))
@@ -898,7 +1021,17 @@ window.__ModuleLoader__.load({
           })()
 
         return h('div', { style: P.wrap },
-          h('div', { style: P.goal }, h('span', { style: P.goalLabel }, t('goalLabel')), h('span', null, goal ?? t('noGoal'))),
+          h('section', { style: P.sheet, 'aria-label': t('goalLabel') },
+            h('div', { style: P.goal },
+              h('span', { style: P.goalLabel }, t('goalLabel')),
+              h('span', { style: { flex: '1 1 auto', minWidth: 0 } }, goal ?? t('noGoal')),
+              sheet ? h('span', { style: { ...S.pill, ...P.sheetPill[sheet] } }, sheet === 'confirmed' ? fill(t('sheetConfirmed'), { date: header.confirmed.date }) : t(sheet === 'changed' ? 'sheetChanged' : 'sheetUnconfirmed')) : null),
+            criteria.length === 0 ? null : h('button', { type: 'button', style: P.criteriaToggle, 'aria-expanded': showCriteria, onClick: () => setShowCriteria(!showCriteria) },
+              `${showCriteria ? '▾' : '▸'} ${fill(t('criteriaLine'), { done: criteria.filter(item => item.done).length, total: criteria.length })}`),
+            showCriteria ? h('ul', { style: P.criteria }, criteria.map((item, index) => h('li', { key: index, style: item.done ? P.criterionDone : null }, `${item.done ? '✓' : '○'} ${item.text}`))) : null,
+            sheet === 'changed' || sheet === 'unconfirmed' ? h('div', { style: { ...S.notice, ...(sheet === 'changed' ? P.sheetWarn : null) } },
+              h('span', { style: S.grow }, t(sheet === 'changed' ? 'sheetChangedHint' : 'sheetUnconfirmedHint')),
+              context.kind === 'member' ? h('button', { type: 'button', style: S.button, onClick: () => open(context.leadId) }, t('openLead')) : null) : null),
           stripView,
           waiting.length === 0 ? null : h('section', { style: S.block },
             h('h2', { style: S.h2 }, t('waitingTitle')),

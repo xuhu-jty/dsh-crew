@@ -101,3 +101,47 @@ test('colors come only from DHS variables (DESIGN.md §4)', () => {
   assert.ok(!/#[0-9a-f]{3,8}\b/i.test(SOURCE), 'no hex colors')
   assert.ok(!/\brgba?\(|\bhsla?\(/i.test(SOURCE), 'no rgb/hsl colors')
 })
+
+/** All text in a stub-rendered tree (components called with their props). */
+function textOf(node) {
+  if (node == null || node === false) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join(' ')
+  const [type, props, ...children] = node.args ?? []
+  if (typeof type === 'function') return textOf(type({ ...props, children }))
+  return textOf(children)
+}
+
+test('the pipeline view renders the requirement sheet: unconfirmed, confirmed, changed', async () => {
+  const PROJECT = '# x\n\n## 目的\n\n让我看清钱花在哪。\n\n## 成功标准\n\n- [x] 记一笔 10 秒内\n- [ ] 月报一键导出\n\n## 范围\n\n**做**：记账\n'
+  const { requirementsFingerprint } = await import('../lib/requirements.js')
+  const header = confirmed => `---\nstage: build\nmilestone: M1\nupdated: 2026-11-17T08:00Z\n${confirmed}waiting: []\n---\n`
+  const render = async (stateText, projectText) => {
+    const { ctx, state } = fakeContext()
+    ctx.remote.workspaceFiles.read = async (_id, path) => ({ ok: true, value: { text: /STATE\.md$/.test(path) ? stateText : projectText } })
+    const { reactStub } = await import('./load-client.js')
+    const original = reactStub.useEffect
+    reactStub.useEffect = callback => { callback() }
+    try {
+      const plugin = createPlugin()
+      plugin.apply(ctx)
+      const View = state.registrations.find(entry => entry.options.name === 'conversation.view').component
+      const lead = { id: 'lead', cwd: 'D:\p', projectionValues: { agentTeam: { tasks: [{ id: 'task-1', subject: '做记账', status: 'in_progress' }] } } }
+      const props = { sessionId: 'lead', t: key => state.dictionaries.crewCenter.zh[key] ?? key, useSessions: selector => selector({ byId: { lead } }), useProjection: () => undefined }
+      View(props)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      return textOf(View(props))
+    } finally {
+      reactStub.useEffect = original
+    }
+  }
+  const fp = requirementsFingerprint(PROJECT)
+  const unconfirmed = await render(header(''), PROJECT)
+  assert.match(unconfirmed, /让我看清钱花在哪。/)
+  assert.match(unconfirmed, /需求还没确认/)
+  assert.match(unconfirmed, /成功标准 1\/2 条已做到/)
+  assert.match(await render(header(`confirmed: 2026-11-17 ${fp}\n`), PROJECT), /需求已确认 · 2026-11-17/)
+  const changed = await render(header(`confirmed: 2026-11-17 ${fp}\n`), PROJECT.replace('记账\n', '记账、报表\n'))
+  assert.match(changed, /确认后改过/)
+  assert.doesNotMatch(changed, /等你的事/, 'the changed sheet is said once, not repeated in the waiting list')
+})

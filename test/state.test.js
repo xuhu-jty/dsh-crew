@@ -19,7 +19,20 @@ const FIXTURES = [
   '---\nstage: coding\nmilestone: 1\n---\n',
   '# 没有文件头\n- 当前阶段：M0\n',
   '',
+  '---\nstage: build\nmilestone: M1\nupdated: 2026-11-17T08:00-08:00\nconfirmed: 2026-11-17 9f3a2c1b\nwaiting: []\n---\n',
+  '---\nstage: build\nmilestone: M1\nupdated: 2026-11-17T08:00-08:00\nconfirmed: none\nwaiting: []\n---\n',
 ]
+
+test('the confirmed field: date + fingerprint, none, or a plain-Chinese problem', () => {
+  assert.deepEqual(checkStateHeader(FIXTURES[7]), [])
+  assert.deepEqual(checkStateHeader(FIXTURES[8]), [])
+  assert.deepEqual(parseStateHeader(FIXTURES[7]).confirmed, { date: '2026-11-17', fingerprint: '9f3a2c1b' })
+  assert.equal(parseStateHeader(FIXTURES[8]).confirmed, null)
+  assert.equal(parseStateHeader(FIXTURES[1]).confirmed, null)
+  const bad = checkStateHeader('---\nstage: build\nmilestone: M1\nupdated: 2026-11-17T08:00Z\nconfirmed: yesterday\nwaiting: []\n---\n')
+  assert.equal(bad.length, 1)
+  assert.match(bad[0], /--confirm/)
+})
 
 test('the views and doc-check read every fixture the same way', () => {
   for (const text of FIXTURES) assert.deepEqual(client.parseStateHeader(text), parseStateHeader(text), JSON.stringify(text))

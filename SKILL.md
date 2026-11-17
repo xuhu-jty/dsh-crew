@@ -24,6 +24,7 @@ description: 用 DHS Agent Teams 组一支按需搭配的团队，把一个完�
 |---|---|---|---|
 | 开工、接续、换会话 | 项目根有 `.team/STATE.md` 吗？有就是接续，按恢复顺序读，不从头来 | 状态卡自动注入 | `reference/resume.md` |
 | 读需求 | 能用一句话说出**真正的目的**吗？用户说的是手段还是目标、症状还是原因？ | 你 | `reference/intake.md` |
+| 用户确认需求，或确认改过的需求 | 用户明确说了确认吗？说了才运行 `doc-check.mjs --confirm` 记下指纹；之后五节需求被改，界面亮"等你重新确认" | 界面提醒 + `doc-check.mjs` | `reference/intake.md` §5、`reference/changes.md` §1 |
 | 方案拍板前（不可逆或影响面大的决定） | 假设推荐方案是错的：最可能错在哪？会连带影响哪些模块、用户习惯和维护成本？ | 独立评审成员（全新上下文） | `reference/planning.md` |
 | 已拍板的方案或路线被推翻 | 旧方案上的评审、设计方向、里程碑哪些失效了？失效的在 STATE.md 列出并重做；有界面就重走阶段 3，`DESIGN.md` 定下前不写面向用户的界面 | 你 | `reference/planning.md` §6 |
 | 派成员写代码前 | 写入范围和进行中的任务重叠吗？改的是公共文件、接口、数据结构吗？ | 你 | `reference/team-ops.md` |

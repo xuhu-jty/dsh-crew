@@ -2,6 +2,7 @@
 stage: intake
 milestone: none
 updated: 2026-01-01T09:00+08:00
+confirmed: none
 waiting:
   - answer: <一句大白话：等用户做什么>
 ---
@@ -14,6 +15,7 @@ waiting:
 > - `stage`：`intake` 读懂需求 · `plan` 定方案 · `design` 定界面 · `foundation` 打地基 · `build` 做功能 · `deliver` 交付 · `delivered` 已交付 · `paused` 暂停。进入哪个阶段就改成哪个；轻量通道跳过的阶段不出现。
 > - `milestone`：当前里程碑编号（`M0`、`M1`…），还没到里程碑写 `none`。
 > - `updated`：最后更新时间，带时区，例如 `2026-11-16T20:00-08:00`。
+> - `confirmed`：用户确认需求的日期和指纹，**不要手写**。用户在对话里明确说确认后，运行 `node <skill 目录>/scripts/doc-check.mjs --confirm <项目路径>` 生成；还没确认写 `none`。之后 `PROJECT.md` 的目的 / 用户与场景 / 成功标准 / 范围 / 假设被改，界面会显示"等你重新确认"（勾选成功标准不算改）。
 > - `waiting`：等用户的事，每条一行 `  - <类型>: <一句大白话>`。类型：`answer` 回答问题 · `decide` 选方案或方向 · `accept` 验收 · `authorize` 授权（提交、安装等）· `act` 用户本人去做的事（例如在 DHS 里开开关）。没有就写 `waiting: []`。
 > - 一句大白话要让不懂技术的人看懂，不写命令、路径、任务编号。
 

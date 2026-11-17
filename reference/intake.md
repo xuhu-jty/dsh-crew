@@ -79,3 +79,4 @@
 
 - 写 `PROJECT.md` 的"目的""用户与场景""成功标准""范围（做 / 不做）""假设"部分（模板 `templates/PROJECT.md`）。
 - 在"仍有效的决定"里写下本轮用户拍板的每个决定和原因；同时建状态卡 `AGENTS.local.md`（`templates/state-card.md`）。
+- 把写好的这五节给用户过目（用户在流水线标签页也能看到）。用户在对话里明确说确认后，运行 `node <skill 目录>/scripts/doc-check.mjs --confirm <项目路径>`，它把这五节的指纹记进 STATE.md 文件头的 `confirmed`。用户没明确说确认，不许运行；不许手写这一行。

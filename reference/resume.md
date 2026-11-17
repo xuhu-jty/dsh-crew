@@ -15,7 +15,7 @@
 
 ## 2. 恢复顺序（读完再动手）
 
-1. 状态卡（已自动注入，确认你看到了它）和 `.team/STATE.md`。STATE.md 还没有文件头（旧项目）时，按当前状态补上（`templates/STATE.md`），再删掉正文里重复的"当前阶段"一行。
+1. 状态卡（已自动注入，确认你看到了它）和 `.team/STATE.md`。STATE.md 还没有文件头（旧项目）时，按当前状态补上（`templates/STATE.md`），再删掉正文里重复的"当前阶段"一行。文件头没有 `confirmed`、或者是 `none`，而项目已经过了读懂需求阶段时：把 `PROJECT.md` 的五节需求给用户看一次，问现在这份对不对；用户确认就运行 `doc-check.mjs --confirm`，不想确认就写 `confirmed: none`，不再反复问。
 2. `PROJECT.md` 与当前里程碑相关的部分（目的、仍有效的决定、履历里的"失败"）。
 3. 任务板 `team_task_list`，和 STATE.md 对账：不一致以任务板为准并补进 STATE.md。任务板为空但 `.team/TASKS-snapshot.md` 存在，说明是 Lead 轮换后的新会话：用快照重建未完成的任务。
 4. `list_agents`：不在的成员负责的 `in_progress` 任务先 `release`，再派新人，附交接单。

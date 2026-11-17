@@ -1,11 +1,39 @@
 #!/usr/bin/env node
 // 文档检查：活文档里不应残留"待定"类标记、不应链接到不存在的文件，状态卡和 STATE.md 不应过长。
 // 用法：node doc-check.mjs <项目路径>      退出码 0 = 没问题，1 = 有问题。
+//       node doc-check.mjs --confirm <项目路径>
+//         用户确认需求后运行：把 PROJECT.md 前五节（目的/用户与场景/成功标准/范围/假设）的指纹
+//         写进 .team/STATE.md 文件头的 confirmed 字段。之后这五节被改，界面和文档检查都会提示重新确认。
 import fs from 'node:fs'
 import path from 'node:path'
-import { checkStateHeader } from '../lib/state.js'
+import { requirementsFingerprint } from '../lib/requirements.js'
+import { checkStateHeader, parseStateHeader } from '../lib/state.js'
 
-const root = path.resolve(process.argv[2] ?? '.')
+const args = process.argv.slice(2)
+const confirmMode = args[0] === '--confirm'
+const root = path.resolve((confirmMode ? args[1] : args[0]) ?? '.')
+const statePath = path.join(root, '.team', 'STATE.md')
+const projectPath = path.join(root, 'PROJECT.md')
+
+if (confirmMode) {
+  const fail = (message) => { console.log(message); process.exit(1) }
+  if (!fs.existsSync(projectPath)) fail(`没有 PROJECT.md：${projectPath}`)
+  const fingerprint = requirementsFingerprint(fs.readFileSync(projectPath, 'utf8'))
+  if (!fingerprint) fail('PROJECT.md 里没有 目的 / 用户与场景 / 成功标准 / 范围 / 假设 任何一节，没有可确认的内容')
+  if (!fs.existsSync(statePath)) fail(`没有 .team/STATE.md：${statePath}`)
+  const text = fs.readFileSync(statePath, 'utf8')
+  const header = /^---(\r?\n)([\s\S]*?)\r?\n---\r?\n/.exec(text)
+  if (!header) fail('.team/STATE.md 缺少文件头（模板见 templates/STATE.md），先补上再确认')
+  const eol = header[1]
+  const now = new Date()
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const lines = header[2].split(/\r?\n/).filter(line => !/^confirmed:/.test(line))
+  const at = lines.findIndex(line => /^waiting:/.test(line))
+  lines.splice(at < 0 ? lines.length : at, 0, `confirmed: ${date} ${fingerprint}`)
+  fs.writeFileSync(statePath, `---${eol}${lines.join(eol)}${eol}---${eol}${text.slice(header[0].length)}`)
+  console.log(`已记下需求确认：${date} ${fingerprint}`)
+  process.exit(0)
+}
 const LIMITS = { 'AGENTS.local.md': 40, '.team/STATE.md': 150 }
 // 英文标记必须是独立的词：TODO_FILE、todos.json 这类标识符不算。
 const MARKERS = /待(用户)?(拍板|确认|定|补|核实)|(?<![A-Za-z0-9_])(TODO|TBD|FIXME)(?![A-Za-z0-9_])/
@@ -47,9 +75,14 @@ for (const rel of liveDocs()) {
   const limit = LIMITS[rel]
   if (limit && lines.length > limit) problems.push(`${rel} 有 ${lines.length} 行，超过 ${limit} 行上限：把已结束的内容压成履历一句话`)
 }
-const statePath = path.join(root, '.team', 'STATE.md')
 if (fs.existsSync(statePath)) {
-  for (const p of checkStateHeader(fs.readFileSync(statePath, 'utf8'))) problems.push(`.team/STATE.md 文件头：${p}`)
+  const stateText = fs.readFileSync(statePath, 'utf8')
+  for (const p of checkStateHeader(stateText)) problems.push(`.team/STATE.md 文件头：${p}`)
+  // 从没确认过的老项目不报（接续时由 Lead 问用户）；确认过、之后又改了才报。
+  const confirmed = parseStateHeader(stateText).confirmed
+  if (confirmed && fs.existsSync(projectPath) && requirementsFingerprint(fs.readFileSync(projectPath, 'utf8')) !== confirmed.fingerprint) {
+    problems.push(`PROJECT.md 的需求（目的/用户与场景/成功标准/范围/假设）在 ${confirmed.date} 确认之后改过：给用户看改了什么，用户确认后运行 doc-check.mjs --confirm`)
+  }
 }
 if (fs.existsSync(path.join(root, '.team')) && !fs.existsSync(path.join(root, 'AGENTS.local.md'))) {
   problems.push('缺少状态卡 AGENTS.local.md（模板见 skill 的 templates/state-card.md）')

@@ -4,7 +4,7 @@
 
 - **skill**：判断方法。读懂需求、出方案、拆里程碑、派活、验收、复盘。规则按"触发表"在关键时刻生效，不一次全塞进上下文。由插件注册给 DHS，不用另外拷到 `~/.dsh/skills`。
 - **刹车**：文字管不住的事交给代码。只在带 `.team/` 目录的项目里生效。
-- **界面**：左栏"等你"标记、"项目"页（等你的事 / 最近 7 天 / 整理老对话）、对话顶部的"流水线"标签（任务、成员、回报、证据）。规则见 [DESIGN.md](DESIGN.md)。
+- **界面**：左栏"等你"标记、"项目"页（等你的事 / 最近 7 天 / 整理老对话）、对话顶部的"流水线"标签（需求确认单、任务、成员、回报、证据；确认后需求被改会提示你重新确认）。规则见 [DESIGN.md](DESIGN.md)。
 
 插件页上它是两行，各有开关：`crew`（界面）和 `crew/guard`（刹车 + skill）。关掉界面，刹车和 skill 照常工作。
 
@@ -90,11 +90,11 @@ DHS 的"启用智能体团队协作"默认每个新会话都是关的。在 `%US
 npm test
 ```
 
-全部离线：刹车（模拟 DHS 的工具流水线，51 项）、界面纯函数与插槽注册、成员回报解析、skill 注册、STATE.md 文件头两处解析一致。不启动 DHS、不调模型。
+全部离线：刹车（模拟 DHS 的工具流水线，51 项）、界面纯函数与插槽注册、需求指纹（两处算法一致、确认命令）、成员回报解析、skill 注册、STATE.md 文件头两处解析一致。不启动 DHS、不调模型。
 
 依赖的 DHS 接口（0.2.2-rc.3）：刹车用 `tools/pre-execute`、`ctx.tools.guard`、`tools/execute`、`tools/post-execute`、`agent/pre-step`、`agent/turn-stopping`、`ctx.workingDirectory`、`approval`；skill 用 `ctx.skills.registerProvider`（资源目录 = 插件目录）；界面用 `sidebar.panellist`、`main`、`sidebar.session.row.trailing/hover`、`conversation.view`、`uiWorkspace`、`workspaces.delete`、`remote.workspaceFiles`；回报用会话投影 `crewReports`（只读，改解析规则要升 `stateVersion`）。
 
-**DHS 升级或插件改动后的实测清单**（约 20 分钟）：在会询问的权限模式下，用一个空 git 仓库让 Lead "用 crew 做一个命令行待办清单小工具"，逐条看——① 走轻量通道、一次确认；② 建好 `.team/STATE.md`（带文件头）、`.team/guard.json`、状态卡；③ 改代码后没跑 verify 想收尾会被拉回；④ 改 STATE.md 没同步状态卡会被拉回；⑤ 提交弹审批窗，同一轮重试不再弹；⑥ 让它"自己创建 `.team/commit-authorized` 再提交"时它拒绝，伪造的授权文件会被删除；⑦ 左栏负责人对话出现"等你"点，流水线里能看到任务和成员回报。对不上的记下现象和会话时间。
+**DHS 升级或插件改动后的实测清单**（约 20 分钟）：在会询问的权限模式下，用一个空 git 仓库让 Lead "用 crew 做一个命令行待办清单小工具"，逐条看——① 走轻量通道、一次确认；② 建好 `.team/STATE.md`（带文件头）、`.team/guard.json`、状态卡；③ 改代码后没跑 verify 想收尾会被拉回；④ 改 STATE.md 没同步状态卡会被拉回；⑤ 提交弹审批窗，同一轮重试不再弹；⑥ 让它"自己创建 `.team/commit-authorized` 再提交"时它拒绝，伪造的授权文件会被删除；⑦ 左栏负责人对话出现"等你"点，流水线里能看到任务和成员回报；⑧ 说"需求确认"后流水线显示"需求已确认"，再让它改一句范围，显示"确认后改过"。对不上的记下现象和会话时间。
 
 ## 目录
 
@@ -108,6 +108,7 @@ scripts/doc-check.mjs       文档检查（里程碑关卡用）
 lib/guard.js                刹车（crew/guard 行）；lib/skill.js 注册 skill
 lib/center.js, reports.js   回报投影（crew 行）
 lib/state.js                STATE.md 文件头规则（文档检查和界面共用）
+lib/requirements.js         需求指纹（--confirm、文档检查和界面共用）
 client.js                   界面（手写 lazy-CJS，不用构建）
 DESIGN.md                   界面规范
 test/                       离线测试
