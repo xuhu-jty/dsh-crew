@@ -46,7 +46,7 @@ brief 里给了 worktree 路径，就只在那里改。共享文档（`PROJECT.m
 ## 完成时
 
 1. 跑 `verify`（没有就跑测试和构建，项目有类型检查、lint 也跑），记录真实输出。
-2. 按 `reference/gates.md` 的任务关卡自查。
+2. 按 `reference/gates.md` 的任务关卡自查。功能读用户真实数据时，只读地用真实数据跑一次，结果和可疑的数写进回报（任务关卡第 8 条）。
 3. `team_task_update complete`，然后按交接协议 `send_message` 给 Lead 和评审员。
 
 ## 不许做
