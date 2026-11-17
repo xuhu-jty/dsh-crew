@@ -46,6 +46,45 @@ for (const rel of liveDocs()) {
   const limit = LIMITS[rel]
   if (limit && lines.length > limit) problems.push(`${rel} 有 ${lines.length} 行，超过 ${limit} 行上限：把已结束的内容压成履历一句话`)
 }
+// STATE.md 文件头是给驾驶舱读的固定格式（templates/STATE.md）。
+const STAGES = new Set(['intake', 'plan', 'design', 'foundation', 'build', 'deliver', 'delivered', 'paused'])
+const WAIT_KINDS = new Set(['answer', 'decide', 'accept', 'authorize', 'act'])
+function checkStateHeader(text) {
+  const out = []
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(text)
+  if (!m) return ['缺少文件头：第一行起用 --- 包住 stage / milestone / updated / waiting（模板见 templates/STATE.md）']
+  const fields = {}
+  let waiting = null
+  for (const line of m[1].split(/\r?\n/)) {
+    if (/^\s*(#.*)?$/.test(line)) continue
+    const item = /^\s+-\s+([a-z]+):\s*(.*)$/.exec(line)
+    if (item) {
+      if (waiting === null) { out.push(`列表项不在 waiting 下面：${line.trim()}`); continue }
+      if (!WAIT_KINDS.has(item[1])) out.push(`waiting 类型 "${item[1]}" 不认识，只能是 ${[...WAIT_KINDS].join(' / ')}`)
+      if (item[2].trim().length === 0 || /^<.*>$/.test(item[2].trim())) out.push(`waiting 有一条没写内容：${line.trim()}`)
+      waiting.push(item[2])
+      continue
+    }
+    const kv = /^([a-z]+):\s*(.*)$/.exec(line)
+    if (!kv) { out.push(`文件头这一行看不懂：${line.trim()}`); continue }
+    fields[kv[1]] = kv[2].trim()
+    if (kv[1] === 'waiting') {
+      if (kv[2].trim() === '[]') waiting = []
+      else if (kv[2].trim() === '') waiting = []
+      else out.push('waiting 要么写 []，要么在下面逐行写 "  - 类型: 一句话"')
+    }
+  }
+  if (!STAGES.has(fields.stage)) out.push(`stage "${fields.stage ?? ''}" 不对，只能是 ${[...STAGES].join(' / ')}`)
+  if (!/^(none|M-?\d+)$/.test(fields.milestone ?? '')) out.push(`milestone "${fields.milestone ?? ''}" 不对，写 none 或 M0、M1…`)
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})$/.test(fields.updated ?? '')) out.push(`updated "${fields.updated ?? ''}" 要带时区，例如 2026-11-16T20:00-08:00`)
+  if (!('waiting' in fields)) out.push('缺少 waiting（没有就写 waiting: []）')
+  return out
+}
+
+const statePath = path.join(root, '.team', 'STATE.md')
+if (fs.existsSync(statePath)) {
+  for (const p of checkStateHeader(fs.readFileSync(statePath, 'utf8'))) problems.push(`.team/STATE.md 文件头：${p}`)
+}
 if (fs.existsSync(path.join(root, '.team')) && !fs.existsSync(path.join(root, 'AGENTS.local.md'))) {
   problems.push('缺少状态卡 AGENTS.local.md（模板见 skill 的 templates/state-card.md）')
 }
