@@ -53,7 +53,7 @@
 
 ## 6. 刹车与状态卡
 
-1. 确认 DHS 已装 `crew-guard` 插件（安装见 skill 目录的 `README.md`）；没装就告诉用户后果（三个硬刹车退化成靠自觉），用户决定。
+1. 确认 crew 插件的 `crew/guard` 行是开着的（见 skill 目录的 `README.md`）；关着就告诉用户后果（三个硬刹车退化成靠自觉），用户决定。
 2. `.team/guard.json` 写好 verify 命令（§1）。
 3. 按 `templates/state-card.md` 在项目根建状态卡 `AGENTS.local.md`，并把 `*.local.md` 加进 `.gitignore`。
 4. 演示时让用户看到：改代码后不跑 verify 就收工会被拉回来；提交会弹窗。

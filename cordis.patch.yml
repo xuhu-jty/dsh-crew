@@ -1,0 +1,11 @@
+# crew: two rows, each with its own switch on the DHS Plugins page.
+# - crew        views (client half) + the read-only crewReports projection
+# - crew/guard  hard brakes + the crew skill. A subpath row loads no client half,
+#               so turning the views off leaves the brakes and the skill working.
+- insert:
+    - id: crew
+      name: 'crew'
+      inject: [sessionProjections]
+    - id: crew-guard
+      name: 'crew/guard'
+      inject: [tools, workingDirectory]

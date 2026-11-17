@@ -1,0 +1,52 @@
+{
+  "name": "crew",
+  "version": "0.6.0",
+  "private": true,
+  "description": "crew for DeepSeek Harness: the team-workflow skill, hard brakes (commit approval, verify before stopping, state card), and the project views (waiting markers, projects page, tidy panel, pipeline)",
+  "type": "module",
+  "main": "lib/center.js",
+  "exports": {
+    ".": "./lib/center.js",
+    "./guard": "./lib/guard.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "SKILL.md",
+    "reference",
+    "roles",
+    "templates",
+    "scripts",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-api-workspace-controller"
+      ]
+    }
+  }
+}

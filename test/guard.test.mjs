@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, decideGuard, decideCommit, authPath, cardPath, statePath, commandSucceeded, MAX_STOP_REMINDERS } from '../lib/index.js'
+import { apply, decideGuard, decideCommit, authPath, cardPath, statePath, commandSucceeded, MAX_STOP_REMINDERS } from '../lib/guard.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ptg-'))
 const teamProj = path.join(tmp, 'proj')
