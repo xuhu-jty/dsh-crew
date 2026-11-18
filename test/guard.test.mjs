@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, decideGuard, decideCommit, authPath, cardPath, statePath, commandSucceeded, MAX_STOP_REMINDERS } from '../lib/guard.js'
+import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ptg-'))
 const teamProj = path.join(tmp, 'proj')
@@ -67,6 +67,16 @@ console.log('== 刹车 2：授权文件写入保护（纯函数）')
 check('write 授权文件 → 拒绝', () => denies(decideGuard('write', { file_path: '.team/commit-authorized', content: '' }, teamProj)))
 check('命令里出现授权文件名 → 拒绝', () => denies(decideGuard('pwsh', { command: 'New-Item .team\\commit-authorized' }, teamProj)))
 check('写普通文件 → 放行', () => passes(decideGuard('write', { file_path: 'README.md', content: 'x' }, teamProj)))
+fs.writeFileSync(path.join(teamProj, '.team', 'pause'), '')
+check('用户暂停（.team/pause）→ 任何工具都拦下', () => {
+  for (const [name, args] of [['read', { file_path: 'README.md' }], ['bash', { command: 'npm test' }], ['subagent', { name: 'x' }], ['send_message', { agent: 'x', message: 'y' }]]) {
+    const r = decideGuard(name, args, teamProj)
+    denies(r); assert.match(r, /暂停/)
+  }
+})
+check('暂停不影响别的项目', () => passes(decideGuard('bash', { command: 'npm test' }, plainProj)))
+fs.rmSync(path.join(teamProj, '.team', 'pause'))
+check('删掉 pause 就恢复', () => passes(decideGuard('bash', { command: 'npm test' }, teamProj)))
 
 console.log('== 命令成败判断')
 check('退出码 0 → 成功', () => assert.equal(commandSucceeded(ok()), true))
@@ -80,11 +90,15 @@ function makeHost({ policy = 'ask', approve = true } = {}) {
   const guards = []
   const session = {}
   const inbox = []
-  const agent = { session, inbox: { append: (target, m) => inbox.push({ target, m }) } }
+  const sessions = new Set([session])
+  const makeAgent = s => ({ session: s, inbox: { append: (target, m) => inbox.push({ target, m }) } })
+  const agent = makeAgent(session)
+  /** A second conversation (e.g. the next milestone's lead) in the same running plugin. */
+  const newAgent = () => { const s = {}; sessions.add(s); return makeAgent(s) }
   apply({
     on: (ev, fn) => { handlers[ev] = fn },
     tools: { guard: g => { guards.push(g); return () => {} } },
-    workingDirectory: { get: s => (s === session ? teamProj : null) },
+    workingDirectory: { get: s => (sessions.has(s) ? teamProj : null) },
     get: name => (name === 'approval' ? { overrideOf: () => policy } : undefined),
   })
   let n = 0
@@ -92,8 +106,8 @@ function makeHost({ policy = 'ask', approve = true } = {}) {
   async function userSays() {
     await handlers['agent/pre-step']({ agent, messages: [{ source: { kind: 'user' } }] }, async () => ({}))
   }
-  async function run(name, args, { body = () => {}, result = ok() } = {}) {
-    const exec = { callId: `c${++n}`, name, arguments: args, agent }
+  async function run(name, args, { body = () => {}, result = ok(), as = agent } = {}) {
+    const exec = { callId: `c${++n}`, name, arguments: args, agent: as }
     let pre = await handlers['tools/pre-execute'](exec, async () => ({ kind: 'allow' }))
     if (pre.kind === 'ask') {
       popups.push(exec.callId)
@@ -120,7 +134,10 @@ function makeHost({ policy = 'ask', approve = true } = {}) {
     handlers['agent/turn-stopping']({ agent, turn: 1, signal: new AbortController().signal })
     return inbox.length > before ? inbox[inbox.length - 1].m.content[0].text : null
   }
-  return { run, userSays, tryStop, popups, inbox }
+  async function step() {
+    await handlers['agent/pre-step']({ agent, messages: [] }, async () => ({}))
+  }
+  return { run, userSays, step, tryStop, popups, inbox, newAgent }
 }
 
 console.log('== 刹车 1+2：接入流水线')
@@ -223,6 +240,125 @@ fs.rmSync(cardPath(teamProj))
   await host.userSays()
   check('同一会话不重复提醒', () => assert.equal(host.inbox.length, count))
 }
+{
+  const saved = fs.readFileSync(statePath(teamProj))
+  fs.rmSync(statePath(teamProj))
+  const host = makeHost()
+  await host.userSays()
+  check('有 .team/ 没有 STATE.md → 提醒一次（界面靠它）', () => assert.ok(host.inbox.some(entry => /还没有 \.team\/STATE\.md/.test(entry.m.content[0].text))))
+  const count = host.inbox.length
+  await host.userSays()
+  check('缺 STATE.md 同一会话不重复提醒', () => assert.equal(host.inbox.length, count))
+  fs.writeFileSync(statePath(teamProj), saved)
+}
+
+console.log('== 刹车 4b：STATE.md 文件头')
+fs.writeFileSync(cardPath(teamProj), '# 状态卡')
+{
+  const host = makeHost()
+  await host.userSays()
+  await host.run('write', { file_path: '.team/STATE.md', content: 'x' }, { body: () => {
+    fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M1\nupdated: 2026-11-17T08:00+08:00\nwaiting:\n  - accept: 看一下 PROJECT.md 前五节\n---\n')
+    fs.writeFileSync(cardPath(teamProj), '# 状态卡 v3')
+  } })
+  const r = host.tryStop()
+  check('等你的事写了文件名 → 拉回来改成大白话', () => assert.match(r ?? '', /看不懂/))
+}
+{
+  const host = makeHost()
+  await host.userSays()
+  await host.run('write', { file_path: '.team/STATE.md', content: 'x' }, { body: () => {
+    fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M1\nupdated: 2026-11-17T08:00+08:00\nwaiting:\n  - accept: 打开网页试一遍记账流程\n---\n')
+    fs.writeFileSync(cardPath(teamProj), '# 状态卡 v4')
+  } })
+  check('文件头正确、大白话 → 可以收工', () => assert.equal(host.tryStop(), null))
+}
+
+console.log('== 刹车 5：成员预算')
+check('默认预算 3', () => assert.equal(memberBudget(teamProj), 3))
+fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small' }))
+check('小项目预算 1', () => assert.equal(memberBudget(teamProj), 1))
+check('没到预算不干预', () => passes(decideSpawn('subagent', teamProj, 'ask', 0)))
+check('到了预算 → 弹窗', () => kindIs(decideSpawn('subagent', teamProj, 'ask', 1), 'ask'))
+check('fork 也算', () => kindIs(decideSpawn('subagent_fork', teamProj, 'ask', 1), 'ask'))
+check('到了预算且从不询问 → 拒绝并说明', () => { const r = decideSpawn('subagent', teamProj, 'never', 1); kindIs(r, 'deny'); assert.match(r.reason, /members/) })
+check('非 crew 项目不管', () => passes(decideSpawn('subagent', plainProj, 'ask', 9)))
+check('别的工具不管', () => passes(decideSpawn('bash', teamProj, 'ask', 9)))
+fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small', members: 5 }))
+check('members 不能把上限调高（agent 自己能改这个文件）', () => assert.equal(memberBudget(teamProj), 1))
+fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'medium', members: 2 }))
+check('members 可以把上限调低', () => assert.equal(memberBudget(teamProj), 2))
+{
+  const host = makeHost()
+  await host.userSays()
+  await host.run('subagent', { name: 'reviewer', prompt: 'x' })
+  await host.run('subagent', { name: 'builder', prompt: 'x' })
+  check('预算内派两个不弹窗', () => assert.equal(host.popups.length, 0))
+  await host.run('subagent', { name: 'qa', prompt: 'x' })
+  check('第三个弹窗', () => assert.equal(host.popups.length, 1))
+  const next = host.newAgent()
+  await host.run('subagent', { name: 'docs', prompt: 'x' }, { as: next })
+  check('换会话不清零（同一里程碑）', () => assert.equal(host.popups.length, 2))
+  fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M2\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n')
+  await host.run('subagent', { name: 'builder-2', prompt: 'x' }, { as: next })
+  check('换里程碑重新计数', () => assert.equal(host.popups.length, 2))
+}
+
+console.log('== 刹车 5b：里程碑换会话提醒')
+fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'large' }))
+check('大项目 M0→M1 → 该换会话', () => assert.equal(needsRotation(teamProj, 'M0', 'M1'), true))
+check('还没到里程碑（none）→ 不提醒', () => assert.equal(needsRotation(teamProj, 'none', 'M0'), false))
+check('同一个里程碑 → 不提醒', () => assert.equal(needsRotation(teamProj, 'M1', 'M1'), false))
+fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small' }))
+check('小项目 → 不提醒', () => assert.equal(needsRotation(teamProj, 'M0', 'M1'), false))
+fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'large' }))
+{
+  const header = m => `---\nstage: build\nmilestone: ${m}\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n`
+  fs.writeFileSync(statePath(teamProj), header('M0'))
+  fs.writeFileSync(cardPath(teamProj), '# 状态卡 r0')
+  const host = makeHost()
+  await host.userSays()
+  await host.run('write', { file_path: '.team/STATE.md', content: 'x' }, { body: () => {
+    fs.writeFileSync(statePath(teamProj), header('M1'))
+    fs.writeFileSync(cardPath(teamProj), '# 状态卡 r1')
+  } })
+  check('Lead 在这段对话里把 M0 改成 M1 → 收工时提醒换会话', () => assert.match(host.tryStop() ?? '', /换一个新会话/))
+  await host.userSays()
+  await host.run('write', { file_path: '.team/STATE.md', content: 'x' }, { body: () => {
+    fs.writeFileSync(statePath(teamProj), header('M1').replace('build', 'deliver'))
+    fs.writeFileSync(cardPath(teamProj), '# 状态卡 r2')
+  } })
+  check('同一会话只提醒一次', () => assert.equal(host.tryStop(), null))
+  const member = makeHost()
+  fs.writeFileSync(statePath(teamProj), header('M0'))
+  await member.userSays()
+  fs.writeFileSync(statePath(teamProj), header('M1'))
+  check('没改 STATE.md 的成员 → 不提醒', () => assert.equal(member.tryStop(), null))
+}
+
+console.log('== 刹车 6：步数提醒')
+check(`默认第 ${DEFAULT_STEP_NOTICE} 步提醒`, () => assert.equal(stepNoticeAt(teamProj, DEFAULT_STEP_NOTICE), 'soft'))
+check('两倍时强提醒', () => assert.equal(stepNoticeAt(teamProj, DEFAULT_STEP_NOTICE * 2), 'strong'))
+check('其他步数不提醒', () => assert.equal(stepNoticeAt(teamProj, 61), null))
+{
+  const host = makeHost()
+  await host.userSays()
+  const before = host.inbox.length
+  // The step that reads the user's message is step 1.
+  for (let i = 2; i < DEFAULT_STEP_NOTICE; i++) await host.step()
+  check('走满之前不提醒', () => assert.equal(host.inbox.length, before))
+  await host.step()
+  check('走满提醒一次', () => { assert.equal(host.inbox.length, before + 1); assert.match(host.inbox.at(-1).m.content[0].text, /60 步/) })
+  // A member reused task after task: each hand-over starts a new turn, but the conversation keeps growing.
+  for (let task = 0; task < 3; task++) {
+    await host.userSays()
+    for (let i = 0; i < 20; i++) await host.step()
+  }
+  check('换了几轮也累计：到 120 步强提醒换人（实测 11-17 成员复用到 117 步、30 万上下文）', () => assert.match(host.inbox.at(-1).m.content[0].text, /120 步[\s\S]*换新成员/))
+}
+check('之后每满 60 步再强提醒', () => assert.equal(stepNoticeAt(teamProj, DEFAULT_STEP_NOTICE * 3), 'strong'))
+fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ steps: 0 }))
+check('steps: 0 关掉提醒', () => assert.equal(stepNoticeAt(teamProj, DEFAULT_STEP_NOTICE), null))
 
 fs.rmSync(tmp, { recursive: true, force: true })
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

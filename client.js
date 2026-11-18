@@ -103,9 +103,51 @@ window.__ModuleLoader__.load({
       return out
     }
 
+    /** First line of "## 升级" in PROJECT.md; same rules as crew lib/requirements.js upgradeLine. */
+    function upgradeLine(text) {
+      let inside = false
+      for (const raw of String(text ?? '').split(/\r?\n/)) {
+        const heading = /^(#{1,2})\s+(.+)$/.exec(raw.trim())
+        if (heading) {
+          if (inside) return null
+          inside = heading[1] === '##' && heading[2].replace(/[（(：:].*$/, '').trim() === '升级'
+          continue
+        }
+        const line = raw.trim()
+        if (!inside || line === '' || line.startsWith('>')) continue
+        if (/<[^>]+>/.test(line)) return null
+        const plain = line.replace(/^[-*]\s+/, '').replace(/\*\*|`/g, '')
+        return plain.length > 160 ? `${plain.slice(0, 159)}…` : plain
+      }
+      return null
+    }
+
+    /**
+     * Milestone ids from the "## 里程碑" table of PROJECT.md ("0", "1", … or "M0", …), in order.
+     * The pipeline uses them to say "milestone 6 of 6" instead of the raw id, which starts at 0.
+     */
+    function milestoneIds(text) {
+      const out = []
+      let inside = false
+      for (const raw of String(text ?? '').split(/\r?\n/)) {
+        const heading = /^(#{1,2})\s+(.+)$/.exec(raw.trim())
+        if (heading) { inside = heading[1] === '##' && heading[2].replace(/[（(：:].*$/, '').trim() === '里程碑'; continue }
+        const row = inside ? /^\|\s*\**M?(\d+)\**\s*\|/i.exec(raw.trim()) : null
+        if (row && !out.includes(row[1])) out.push(row[1])
+      }
+      return out
+    }
+
+    /** "第 6 个，共 6 个" position of the current milestone, or null when the table does not list it. */
+    function milestonePosition(milestone, ids) {
+      const id = /^M?(\d+)$/i.exec(String(milestone ?? ''))?.[1]
+      const index = id === undefined ? -1 : (ids ?? []).indexOf(id)
+      return index < 0 ? null : { n: index + 1, total: ids.length }
+    }
+
     /** What the views need from PROJECT.md. */
     function parseProject(text) {
-      return { goal: parseGoal(text), fingerprint: requirementsFingerprint(text), criteria: successCriteria(text) }
+      return { goal: parseGoal(text), upgrade: upgradeLine(text), fingerprint: requirementsFingerprint(text), criteria: successCriteria(text), milestones: milestoneIds(text) }
     }
 
     /**
@@ -147,6 +189,25 @@ window.__ModuleLoader__.load({
     const isRoot = row => row != null && row.origin !== 'subagent' && !row.parentId
     const taskCount = row => (Array.isArray(row?.projectionValues?.agentTeam?.tasks) ? row.projectionValues.agentTeam.tasks.length : 0)
     const isLeadRow = row => isRoot(row) && taskCount(row) > 0
+
+    /**
+     * The lead conversation of the crew project in `cwd`. With a crew STATE.md header that is the
+     * newest non-blank conversation in the folder: on a small project the lead often works alone
+     * and never creates a team task (seen live 11-17), so "has tasks" alone would hide the
+     * project. Without a header only conversations that run a task board count.
+     * @returns {string|null}
+     */
+    function crewLead(byId, cwd, hasHeader) {
+      const key = pathKey(cwd)
+      if (!key) return null
+      let best = null
+      for (const row of Object.values(byId ?? {})) {
+        if (!isRoot(row) || row.blank || pathKey(row.cwd) !== key) continue
+        if (!hasHeader && !isLeadRow(row)) continue
+        if (best === null || (row.updatedAt ?? 0) > (best.updatedAt ?? 0)) best = row
+      }
+      return best?.id ?? null
+    }
 
     /**
      * Group DHS data into projects (one per listed workspace).
@@ -207,33 +268,46 @@ window.__ModuleLoader__.load({
       return projects.filter(p => p.lastAt > 0 && now - p.lastAt <= RECENT_DAYS * DAY).sort((a, b) => b.lastAt - a.lastAt)
     }
 
+    /** Batches in the order they are offered; a conversation only appears in the first one it fits. */
+    const TIDY_BATCHES = ['superseded', 'delivered', 'stale', 'blank', 'scratch']
+    const SUPERSEDED_DAYS = 1
+    const DELIVERED_DAYS = 3
+
     /**
-     * Tidy candidates (DESIGN.md §3 D). Never: pinned, running, a lead with waiting items,
-     * anything active in the last 7 days, archived or subagent rows. First matching batch wins.
-     * Conversations that belong to no folder (DHS's "未分组") are covered too, with `folder: null`.
-     * @returns {{stale: object[], blank: object[], scratch: object[]}}
+     * Tidy candidates (DESIGN.md §3 D), by what a conversation is for, not only its age:
+     * - superseded: an older lead conversation of a project that a newer lead ("接续 …") took over;
+     * - delivered: conversations of a project whose STATE.md says it was delivered;
+     * - stale (30+ days), blank, scratch-folder: as before, only after 7 quiet days.
+     * Never: pinned, running, the lead that has waiting items, archived or member rows.
+     * Conversations outside every folder (DHS's "未分组") are covered too, with `folder: null`.
+     * @param {Set<string>} [deliveredKeys] - pathKey of projects whose header stage is `delivered`.
+     * @returns {{superseded: object[], delivered: object[], stale: object[], blank: object[], scratch: object[]}}
      */
-    function tidyCandidates({ sessions, workspaces, waitingLeadIds, now }) {
+    function tidyCandidates({ sessions, workspaces, waitingLeadIds, deliveredKeys, now }) {
       const byId = sessions?.byId ?? {}
       const archived = new Set(workspaces?.archivedSessionIds ?? [])
       const pinned = new Set(workspaces?.pinnedSessionIds ?? [])
       const protectedIds = new Set(waitingLeadIds ?? [])
-      const batches = { stale: [], blank: [], scratch: [] }
+      const delivered = deliveredKeys ?? new Set()
+      const batches = Object.fromEntries(TIDY_BATCHES.map(key => [key, []]))
       const grouped = new Set()
       const groups = (workspaces?.items ?? []).map(item => {
         for (const id of item.sessionIds ?? []) grouped.add(id)
         const rows = (item.sessionIds ?? []).filter(id => !archived.has(id)).map(id => byId[id]).filter(isRoot)
-        return { folder: item.title || item.path, rows, scratchFolder: isScratchPath(item.path) && rows.length === 1 }
+        const leads = rows.filter(isLeadRow).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+        return { folder: item.title || item.path, rows, scratchFolder: isScratchPath(item.path) && rows.length === 1, latestLead: leads[0]?.id ?? null, delivered: delivered.has(pathKey(item.path)) }
       })
       const ungrouped = Object.values(byId).filter(row => isRoot(row) && !grouped.has(row.id) && !archived.has(row.id))
-      groups.push({ folder: null, rows: ungrouped, scratchFolder: false })
-      for (const { folder, rows, scratchFolder } of groups) {
+      groups.push({ folder: null, rows: ungrouped, scratchFolder: false, latestLead: null, delivered: false })
+      for (const { folder, rows, scratchFolder, latestLead, delivered: projectDelivered } of groups) {
         for (const row of rows) {
           if (pinned.has(row.id) || row.running || protectedIds.has(row.id)) continue
           const idle = now - (row.updatedAt ?? 0)
-          if (idle <= RECENT_DAYS * DAY) continue
           const entry = { id: row.id, title: row.title || '', folder, updatedAt: row.updatedAt ?? 0 }
-          if (idle > STALE_DAYS * DAY) batches.stale.push(entry)
+          if (isLeadRow(row) && latestLead && row.id !== latestLead && idle > SUPERSEDED_DAYS * DAY) batches.superseded.push(entry)
+          else if (projectDelivered && idle > DELIVERED_DAYS * DAY) batches.delivered.push(entry)
+          else if (idle <= RECENT_DAYS * DAY) continue
+          else if (idle > STALE_DAYS * DAY) batches.stale.push(entry)
           else if (row.blank) batches.blank.push(entry)
           else if (scratchFolder) batches.scratch.push(entry)
         }
@@ -268,9 +342,6 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- M2 pipeline model
 
-    /** The seven pipeline stages shown on the strip (`paused` is a state, not a step). */
-    const PIPELINE = STAGES.filter(stage => stage !== 'paused')
-
     /** "[M0] DSH 源码 dev 环境" -> "DSH 源码 dev 环境". */
     function stripTitle(subject) {
       return String(subject ?? '').replace(/^\s*(\[[^\]]*\]\s*)+/, '').trim()
@@ -280,11 +351,12 @@ window.__ModuleLoader__.load({
      * Which pipeline the conversation belongs to: a lead shows its own team, a member shows its
      * lead's team with its own tasks highlighted, anything else gets the short version.
      */
-    function pipelineContext(sessionId, byId) {
+    function pipelineContext(sessionId, byId, hasHeaderFor = () => false) {
+      const isLead = row => isLeadRow(row) || (isRoot(row) && crewLead(byId, row.cwd, hasHeaderFor(row.cwd)) === row.id)
       const row = byId?.[sessionId]
-      if (isLeadRow(row)) return { kind: 'lead', leadId: row.id }
+      if (isLead(row)) return { kind: 'lead', leadId: row.id }
       const parent = row?.parentId ? byId?.[row.parentId] : undefined
-      if (row?.origin === 'subagent' && isLeadRow(parent)) return { kind: 'member', leadId: parent.id }
+      if (row?.origin === 'subagent' && parent && isLead(parent)) return { kind: 'member', leadId: parent.id }
       return { kind: 'plain', leadId: null }
     }
 
@@ -333,13 +405,6 @@ window.__ModuleLoader__.load({
       return blocked ? 'blocked' : 'todo'
     }
 
-    /** Stage strip: finished steps (collapsed in the view), the current one, and what is left. */
-    function stageStrip(stage) {
-      const index = PIPELINE.indexOf(stage)
-      if (index < 0) return { done: [], current: stage ?? null, upcoming: stage === 'paused' ? [] : PIPELINE }
-      return { done: PIPELINE.slice(0, index), current: stage, upcoming: PIPELINE.slice(index + 1) }
-    }
-
     /** First sentence under "## 目的" (or "## Goal") in PROJECT.md; null when absent. */
     function parseGoal(text) {
       const lines = String(text ?? '').split(/\r?\n/)
@@ -367,21 +432,131 @@ window.__ModuleLoader__.load({
       return Math.max(1, Math.min(3, Math.ceil(count / 6)))
     }
 
+    /** Member names are "<role>-<scope>" (reference/team-ops.md); the role prefix becomes a plain word. */
+    const ROLES = ['scout', 'critic', 'product', 'architect', 'designer', 'builder', 'reviewer', 'qa', 'docs', 'compliance']
+    /** Names leads actually used before the naming rule (seen in real projects: "review-architect"). */
+    const ROLE_ALIASES = { review: 'reviewer', design: 'designer', build: 'builder', test: 'qa', doc: 'docs', arch: 'architect' }
+    /** The name DHS gives a member when the lead passes none (seen live 11-17). */
+    const AUTO_NAME = /^agent-\d+$/i
+
     /**
-     * Member name and model from the owner conversation's list row. A task owned by the lead
-     * itself returns `isLead: true` so the view can say "负责人" instead of an internal name.
+     * Who does a task, in words the user can read: the lead itself, or the member's role plus
+     * its name (so two builders stay apart). `role` is a ROLES key or null for unknown names.
      */
-    function ownerInfo(byId, ownerId, ownerName, leadId) {
-      const row = ownerId ? byId?.[ownerId] : undefined
-      const label = row?.projectionValues?.subagent?.label
-      return {
-        isLead: Boolean(ownerId) && ownerId === leadId,
-        name: typeof label === 'string' && label.trim() ? label.trim() : (ownerName ?? null),
-        model: row?.projectionValues?.modelSelection?.lastUsed?.model ?? null,
-      }
+    function ownerInfo(ownerId, ownerName, leadId) {
+      const isLead = Boolean(ownerId) && ownerId === leadId
+      const name = typeof ownerName === 'string' && ownerName.trim() ? ownerName.trim() : null
+      const raw = name ? name.toLowerCase().split(/[-_\d]/)[0] : ''
+      const prefix = ROLE_ALIASES[raw] ?? raw
+      return { id: ownerId ?? null, isLead, role: ROLES.includes(prefix) ? prefix : null, name }
     }
 
-    const model = { parseStateHeader, pathKey, isScratchPath, buildProjects, leadIdsByProject, collectWaiting, recentProjects, tidyCandidates, emptyFolders, relativeTime, stripTitle, pipelineContext, taskColumns, taskState, stageStrip, parseGoal, requirementsFingerprint, successCriteria, parseProject, requirementsStatus, withRequirements, firstParagraph, columnCards, ownerInfo, STAGES, WAIT_ORDER, PIPELINE }
+    // "无" may come with an explanation ("无（只写评审报告…）", seen live 11-17): still nothing.
+    const NONE = /^((无|没有|none|n\/a)([。.，,；;:：（(\s].*)?)?$/is
+
+    /**
+     * Each task's latest report. Reports normally carry the task id; one a member sent without it
+     * is folded under `@<member>` (lib/reports.js) and counts for the most recent unfinished-or-last
+     * task that member owns, unless a newer report names the task. Reports that match no task on
+     * the board stay under their own key: a lead working without a task board still sends members
+     * out (seen live 11-17), and their decisions must not vanish.
+     * @returns {Record<string, object>} reports keyed by task id (or their original key).
+     */
+    function reportsByTask(tasks, reports) {
+      const out = {}
+      const list = Array.isArray(tasks) ? tasks.filter(task => task && task.status !== 'deleted') : []
+      for (const [key, report] of Object.entries(reports ?? {})) if (report && !key.startsWith('@')) out[key] = report
+      for (const [key, report] of Object.entries(reports ?? {})) {
+        if (!key.startsWith('@') || !report) continue
+        const owned = list.filter(task => task.ownerName === key.slice(1))
+        const task = owned.find(item => item.status !== 'completed' && !out[item.id]) ?? owned[owned.length - 1]
+        if (!task) out[key] = report
+        else if ((out[task.id]?.at ?? 0) <= (report.at ?? 0)) out[task.id] = { ...report, taskId: task.id }
+      }
+      return out
+    }
+
+    /**
+     * Decisions the team made on its own while working (the "偏离" line of a hand-over report):
+     * the unknowns found during implementation, shown so the user can overrule them.
+     * Newest first, at most `limit`.
+     */
+    /**
+     * Same rules as crew lib/state.js jargonIn, plus a length cap: a deviation is shown to the user
+     * as written, so one with paths, file names, commands or code quotes is a technical detail.
+     */
+    const JARGON = [/`/, /[\w-]+\.(md|js|mjs|cjs|ts|tsx|jsx|json|ya?ml|ps1|sh|py|html|css|toml|lock)\b/i, /[A-Za-z]:\\|(^|[\s(（])\.{0,2}\/[\w.-]+\/|\\[\w.-]+\\/, /\btask-\d+\b/i, /(^|\s)--?[a-z][\w-]*/i, /\bcwd\b|探针|变异|非产品问题/i]
+    const PLAIN_LIMIT = 80
+    function isPlain(text) {
+      const value = String(text ?? '').trim()
+      return value.length <= PLAIN_LIMIT && !JARGON.some(re => re.test(value))
+    }
+
+    function deviations(tasks, reports, limit = 5) {
+      const titles = new Map((Array.isArray(tasks) ? tasks : []).map(task => [task.id, stripTitle(task.subject)]))
+      // A task gone from the board (deleted) drops its report; one never on a board shows its sender.
+      const deleted = new Set((Array.isArray(tasks) ? tasks : []).filter(task => task?.status === 'deleted').map(task => task.id))
+      return Object.values(reports ?? {})
+        .filter(report => report && typeof report.deviation === 'string' && !NONE.test(report.deviation.trim()) && !deleted.has(report.taskId))
+        .filter(report => titles.has(report.taskId) || report.from)
+        .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+        .slice(0, limit)
+        .map(report => ({ taskId: report.taskId ?? `@${report.from}`, title: titles.get(report.taskId) ?? report.from, text: report.deviation, plain: isPlain(report.deviation) }))
+    }
+
+    /**
+     * Total tokens of one conversation from DHS's own `tokenUsage` projection, or null. The session
+     * list carries its wire view, the four totals flat (DHS 0.2.2 TokenUsageProjection); the stored
+     * state nests them under `totals`. Both are read.
+     */
+    function tokensOf(row) {
+      const usage = row?.projectionValues?.tokenUsage
+      const totals = usage?.totals ?? usage
+      if (!totals || typeof totals !== 'object') return null
+      const sum = ['uncachedInputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'].reduce((acc, key) => acc + (Number(totals[key]) || 0), 0)
+      return sum > 0 ? sum : null
+    }
+
+    /**
+     * How much the lead and each member used, biggest first; null when DHS sent no usage.
+     * @returns {{id: string, isLead: boolean, name: string|null, tokens: number}[] | null}
+     */
+    function teamUsage(byId, leadId, tasks) {
+      const names = new Map()
+      for (const task of Array.isArray(tasks) ? tasks : []) if (task.ownerId && !names.has(task.ownerId)) names.set(task.ownerId, task.ownerName ?? null)
+      const ids = [leadId, ...Object.values(byId ?? {}).filter(row => row?.parentId === leadId).map(row => row.id)]
+      const out = []
+      for (const id of new Set(ids)) {
+        const tokens = tokensOf(byId?.[id])
+        if (tokens !== null) out.push({ id, isLead: id === leadId, name: names.get(id) ?? byId[id]?.projectionValues?.subagent?.name ?? null, tokens })
+      }
+      return out.length === 0 ? null : out.sort((a, b) => b.tokens - a.tokens)
+    }
+
+    /**
+     * Everything spent in one project folder: every conversation whose folder is `key`, plus the
+     * members those conversations started. The pipeline shows it next to the current stretch, so a
+     * project that rotated its lead conversation does not look cheaper than it was.
+     */
+    function projectUsage(byId, key) {
+      if (!key) return null
+      const rows = Object.values(byId ?? {})
+      const roots = new Set(rows.filter(row => row?.cwd && pathKey(row.cwd) === key).map(row => row.id))
+      let total = 0
+      for (const row of rows) {
+        if (!row || !(roots.has(row.id) || roots.has(row.parentId))) continue
+        total += tokensOf(row) ?? 0
+      }
+      return total > 0 ? total : null
+    }
+
+    /** 123456789 -> "1.2 亿" / "123.5M"; 51415000 -> "5142 万"; 35000 -> "3.5 万" / "35K". */
+    function formatTokens(n, zh = true) {
+      if (zh) return n >= 1e8 ? `${(n / 1e8).toFixed(1)} 亿` : n >= 1e6 ? `${Math.round(n / 1e4)} 万` : n >= 1e4 ? `${Math.round(n / 1e3) / 10} 万` : String(n)
+      return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n)
+    }
+
+    const model = { parseStateHeader, pathKey, isScratchPath, buildProjects, leadIdsByProject, collectWaiting, recentProjects, tidyCandidates, emptyFolders, relativeTime, stripTitle, pipelineContext, taskColumns, taskState, parseGoal, requirementsFingerprint, successCriteria, upgradeLine, parseProject, requirementsStatus, withRequirements, firstParagraph, columnCards, ownerInfo, crewLead, reportsByTask, deviations, tokensOf, teamUsage, projectUsage, formatTokens, isPlain, milestoneIds, milestonePosition, STAGES, WAIT_ORDER }
 
     // ------------------------------------------------------------------ copy
 
@@ -402,13 +577,15 @@ window.__ModuleLoader__.load({
       waitingLine: '{stage} · {n} 件事等你',
       moreWaiting: '还有 {n} 件',
       dotLabel: '有 {n} 件事等你',
-      tidySummary: '{stale} 段对话超过 30 天没动，{blank} 段是空对话，{scratch} 段在临时文件夹里',
+      tidySummary: '{n} 段对话可以收起来',
       tidyButton: '整理一下',
       back: '返回',
       tidyIntro: '归档只是从左栏收起来，随时能在 DHS 的归档筛选里找回，不删除任何内容。',
-      batchStale: '超过 30 天没动',
-      batchBlank: '空对话（开了但没发过消息）',
-      batchScratch: '临时文件夹里的唯一一段对话',
+      batch_superseded: '已经被新会话接手的旧负责人对话',
+      batch_delivered: '已交付项目里的对话',
+      batch_stale: '超过 30 天没动',
+      batch_blank: '空对话（开了但没发过消息）',
+      batch_scratch: '临时文件夹里的唯一一段对话',
       untitled: '（没有标题）',
       ungrouped: '未分组',
       archiveN: '归档 {n} 段',
@@ -431,37 +608,47 @@ window.__ModuleLoader__.load({
       cancel: '取消',
       pipelineTab: '流水线',
       leadName: '负责人',
+      role: { scout: '勘察', critic: '方案评审', product: '产品评审', architect: '架构评审', designer: '设计', builder: '实现', reviewer: '评审', qa: '测试', docs: '文档', compliance: '合规' },
       none: '—',
       goalLabel: '目标',
+      upgradeLabel: '升级',
       noGoal: '还没有写下目标',
       requirementsChanged: '需求改过了，等你重新确认',
       sheetConfirmed: '需求已确认 · {date}',
       sheetChanged: '确认后改过',
       sheetUnconfirmed: '需求还没确认',
       criteriaLine: '成功标准 {done}/{total} 条已做到',
-      sheetChangedHint: '确认之后，PROJECT.md 里的目的、用户与场景、成功标准、范围或假设被改过。看过没问题，在负责人对话里说“需求确认”。',
-      sheetUnconfirmedHint: '看过 PROJECT.md 里的目的、用户与场景、成功标准、范围和假设没问题，在负责人对话里说“需求确认”。',
-      doneSteps: '✓ 已完成 {n} 步',
-      stageUnknown: '阶段未知',
-      tasksTitle: '任务',
-      noTasks: '还没有任务。',
-      detailHint: '点一个任务看详情。',
+      sheetChangedHint: '你确认过的需求（目的、用户、成功标准、范围、假设）后来被改了。在负责人对话里说“把改了什么给我看”，没问题再说“需求确认”。',
+      sheetUnconfirmedHint: '需求（目的、用户、成功标准、范围、假设）还没经过你确认。在负责人对话里说“把需求确认单给我看”，没问题再说“需求确认”。',
+      progressLine: '现在：{stage}',
+      progressMilestone: '现在：{stage} · 第 {n} 个里程碑（共 {total} 个）',
+      progressMilestoneRaw: '现在：{stage} · 里程碑 {m}',
+      decisionsTitle: '团队替你定的事',
+      decisionsHint: '做的过程中遇到计划没写到的情况，团队按稳妥的做法先定了。不同意就在负责人对话里说。',
+      tasksTitle: '在做的任务',
+      doneTasks: '已完成 {n} 个 ▸',
+      hideDone: '收起已完成的',
+      allDone: '任务都完成了。',
+      usageTitle: '用量',
+      usageLine: '用量：一共约 {total}，最多的是{top}（{share}%）',
+      usageProject: '用量：这个项目一共约 {project}；这一段约 {total}，最多的是{top}（{share}%）',
+      decisionsTechnical: '另有 {n} 条技术细节，不影响你怎么用，在负责人对话里。',
+      usageHint: '单位是模型读写的文字量。数字越大越贵；一个成员占得特别多，通常是它在很长的对话里走了很多步。',
+      noTasks: '没有拆成任务：负责人自己在做，进度看上面的成功标准。',
       detailWhat: '做什么',
       detailWho: '谁在做',
-      detailOutput: '交了什么',
+      detailOutput: '改了哪些文件',
+      detailResult: '结果',
       detailEvidence: '证据',
+      detailDeviation: '自己定的事',
       openChat: '回到这段对话',
       noTeam: '这段对话没有用团队方式推进',
-      saidFirst: '你说的话',
-      turnsCount: '{n} 轮',
-      lastActive: '最后活动',
       yourTask: '你在这段对话里负责的',
       task_done: '完成',
       task_doing: '正在做',
       task_blocked: '等前面的任务',
       task_todo: '还没开始',
       task_problem: '有问题',
-      detailReport: '最新回报',
       detailUnverified: '没验证的',
       detailLeftover: '遗留',
       evidenceNotListed: '回报里没写检查结果，点“回到这段对话”看全文',
@@ -488,13 +675,15 @@ window.__ModuleLoader__.load({
       waitingLine: '{stage} · {n} waiting for you',
       moreWaiting: '{n} more',
       dotLabel: '{n} waiting for you',
-      tidySummary: '{stale} conversations idle for 30+ days, {blank} empty, {scratch} in scratch folders',
+      tidySummary: '{n} conversations can be put away',
       tidyButton: 'Tidy up',
       back: 'Back',
       tidyIntro: 'Archiving only hides conversations from the sidebar. They stay in DHS’s archived filter and nothing is deleted.',
-      batchStale: 'Idle for more than 30 days',
-      batchBlank: 'Empty (never sent a message)',
-      batchScratch: 'The only conversation in a scratch folder',
+      batch_superseded: 'Old lead conversations a newer one took over',
+      batch_delivered: 'Conversations of delivered projects',
+      batch_stale: 'Idle for more than 30 days',
+      batch_blank: 'Empty (never sent a message)',
+      batch_scratch: 'The only conversation in a scratch folder',
       untitled: '(untitled)',
       ungrouped: 'Ungrouped',
       archiveN: 'Archive {n}',
@@ -517,37 +706,47 @@ window.__ModuleLoader__.load({
       cancel: 'Cancel',
       pipelineTab: 'Pipeline',
       leadName: 'Lead',
+      role: { scout: 'Scout', critic: 'Plan review', product: 'Product review', architect: 'Architecture review', designer: 'Design', builder: 'Build', reviewer: 'Review', qa: 'Testing', docs: 'Docs', compliance: 'Compliance' },
       none: '—',
       goalLabel: 'Goal',
+      upgradeLabel: 'Raised to',
       noGoal: 'No goal written down yet',
       requirementsChanged: 'The requirements changed and need your confirmation again',
       sheetConfirmed: 'Requirements confirmed · {date}',
       sheetChanged: 'Changed since you confirmed',
       sheetUnconfirmed: 'Requirements not confirmed yet',
       criteriaLine: 'Success criteria: {done} of {total} met',
-      sheetChangedHint: 'Since you confirmed, the goal, users, success criteria, scope or assumptions in PROJECT.md changed. If they look right, say "requirements confirmed" in the lead conversation.',
-      sheetUnconfirmedHint: 'Read the goal, users, success criteria, scope and assumptions in PROJECT.md. If they look right, say "requirements confirmed" in the lead conversation.',
-      doneSteps: '✓ {n} steps done',
-      stageUnknown: 'Stage unknown',
-      tasksTitle: 'Tasks',
-      noTasks: 'No tasks yet.',
-      detailHint: 'Pick a task to see details.',
+      sheetChangedHint: 'The requirements you confirmed (goal, users, success criteria, scope, assumptions) changed since. Ask the lead "show me what changed", then say "requirements confirmed" if it looks right.',
+      sheetUnconfirmedHint: 'You have not confirmed the requirements (goal, users, success criteria, scope, assumptions) yet. Ask the lead "show me the requirement sheet", then say "requirements confirmed" if it looks right.',
+      progressLine: 'Now: {stage}',
+      progressMilestone: 'Now: {stage} · milestone {n} of {total}',
+      progressMilestoneRaw: 'Now: {stage} · milestone {m}',
+      decisionsTitle: 'Decided for you by the team',
+      decisionsHint: 'The plan did not cover these, so the team took the safe option. Say so in the lead conversation if you disagree.',
+      tasksTitle: 'Tasks in progress',
+      doneTasks: '{n} done ▸',
+      hideDone: 'Hide finished',
+      allDone: 'All tasks are done.',
+      usageTitle: 'Usage',
+      usageLine: 'Usage: about {total} in all, most of it by {top} ({share}%)',
+      usageProject: 'Usage: about {project} for this project; this stretch about {total}, most of it by {top} ({share}%)',
+      decisionsTechnical: '{n} more technical notes that do not change how you use it are in the lead conversation.',
+      usageHint: 'Counted in text the model read and wrote. Bigger is more expensive; one member taking far more usually means it ran many steps in a very long conversation.',
+      noTasks: 'Not split into tasks: the lead is doing it alone. Progress is the success criteria above.',
       detailWhat: 'What',
       detailWho: 'Who',
-      detailOutput: 'Delivers',
+      detailOutput: 'Files changed',
+      detailResult: 'Result',
       detailEvidence: 'Evidence',
+      detailDeviation: 'Decided on its own',
       openChat: 'Open this conversation',
       noTeam: 'This conversation is not run as a team project',
-      saidFirst: 'What you said',
-      turnsCount: '{n} turns',
-      lastActive: 'Last active',
       yourTask: 'Handled in this conversation',
       task_done: 'Done',
       task_doing: 'In progress',
       task_blocked: 'Waiting on earlier tasks',
       task_todo: 'Not started',
       task_problem: 'Needs attention',
-      detailReport: 'Latest report',
       detailUnverified: 'Not verified',
       detailLeftover: 'Left over',
       evidenceNotListed: 'The report lists no checks; open the conversation for the full text',
@@ -578,6 +777,9 @@ window.__ModuleLoader__.load({
     function createHeaderStore(remote) {
       const entries = new Map()
       const projects = new Map()
+      // `.team/guard.json` marks a crew folder before STATE.md exists: the lead writes it first
+      // and may spend minutes on design before the state file (seen live 11-17).
+      const markers = new Map()
       const listeners = new Set()
       let version = 0
       const notify = () => { version += 1; for (const listener of listeners) listener() }
@@ -604,6 +806,7 @@ window.__ModuleLoader__.load({
         known.set(key, [cwd, sessionId])
         load(entries, key, sessionId, projectFile(cwd, '.team', 'STATE.md'), parseStateHeader, 'header', force)
         load(projects, key, sessionId, projectFile(cwd, 'PROJECT.md'), parseProject, 'project', force)
+        load(markers, key, sessionId, projectFile(cwd, '.team', 'guard.json'), text => String(text).trim() !== '', 'crew', force)
       }
       // While any crew view is on screen, re-read the known projects once a minute, so an edit
       // made in the conversation (or by hand) shows up without navigating. Views redraw only
@@ -625,6 +828,8 @@ window.__ModuleLoader__.load({
         version: () => version,
         get: key => withRequirements(entries.get(key)?.header, projects.get(key)?.project),
         project: key => projects.get(key)?.project ?? null,
+        /** A crew folder: it has a STATE.md header, or at least the brakes' `.team/guard.json`. */
+        isCrew: key => Boolean(entries.get(key)?.header?.ok || markers.get(key)?.crew),
         snapshot() {
           const out = new Map()
           for (const [key, entry] of entries) if (entry.header) out.set(key, withRequirements(entry.header, projects.get(key)?.project))
@@ -673,11 +878,17 @@ window.__ModuleLoader__.load({
     function useProjectData(props, store) {
       const sessions = props.useSessions(state => state)
       const workspaces = props.useWorkspaces(state => state)
-      const projects = useMemo(() => buildProjects(sessions, workspaces), [sessions, workspaces])
+      const listed = useMemo(() => buildProjects(sessions, workspaces), [sessions, workspaces])
       useEffect(() => {
-        for (const project of projects) if (project.leadId) store.ensure(project.key, project.path, project.leadId)
-      }, [projects, store])
+        // Every folder may be a crew project: read its header through any of its conversations.
+        for (const project of listed) {
+          const via = project.leadId ?? project.lastId
+          if (via) store.ensure(project.key, project.path, via)
+        }
+      }, [listed, store])
       const headers = useHeaders(store)
+      // A folder with a crew header has a lead even when no team task was ever created.
+      const projects = listed.map(project => (store.isCrew(project.key) ? { ...project, leadId: crewLead(sessions?.byId, project.path, true) ?? project.leadId } : project))
       return { sessions, workspaces, projects, headers }
     }
 
@@ -685,11 +896,13 @@ window.__ModuleLoader__.load({
 
     function leadHeaderFor(props, store) {
       const row = props.useSessions(state => state.byId?.[props.sessionId])
-      const isLead = isLeadRow(row)
-      const key = isLead ? pathKey(row.cwd) : null
-      useEffect(() => { if (isLead && row.cwd) store.ensure(key, row.cwd, row.id) }, [isLead, key, row, store])
+      const key = isRoot(row) && row.cwd ? pathKey(row.cwd) : null
+      useEffect(() => { if (key) store.ensure(key, row.cwd, row.id) }, [key, row, store])
       useSyncExternalStore(store.subscribe, store.version)
-      return isLead ? store.get(key) : undefined
+      const header = key ? store.get(key) : undefined
+      // A primitive selector: the row re-renders only when the folder's lead changes.
+      const leadId = props.useSessions(state => (key ? crewLead(state.byId, row.cwd, store.isCrew(key)) : null))
+      return leadId === props.sessionId ? header : undefined
     }
 
     function makeRowDot(store, t) {
@@ -768,7 +981,7 @@ window.__ModuleLoader__.load({
     }
 
     function TidyPanel({ batches, folders, ui, workspacesApi, t, now, isZh, onBack }) {
-      const all = [...batches.stale, ...batches.blank, ...batches.scratch]
+      const all = TIDY_BATCHES.flatMap(key => batches[key])
       const [selected, setSelected] = useState(() => new Set(all.map(item => item.id)))
       const [busy, setBusy] = useState(false)
       const [result, setResult] = useState(null)
@@ -790,8 +1003,8 @@ window.__ModuleLoader__.load({
         setBusy(false)
         setResult({ ...result, undone: true })
       }
-      const batch = (key, label) => batches[key].length === 0 ? null : h('section', { key, style: S.block },
-        h('h2', { style: S.h2 }, `${label} · ${batches[key].length}`),
+      const batch = key => batches[key].length === 0 ? null : h('section', { key, style: S.block },
+        h('h2', { style: S.h2 }, `${t(`batch_${key}`)} · ${batches[key].length}`),
         h('div', { style: S.card }, batches[key].map((item, index) => h('label', { key: item.id, style: { ...S.row, ...(index === 0 ? S.rowFirst : null), cursor: 'pointer' } },
           h('input', { type: 'checkbox', checked: selected.has(item.id), disabled: busy || result !== null, onChange: () => toggle(item.id) }),
           h('span', { style: S.grow }, item.title || t('untitled')),
@@ -812,9 +1025,7 @@ window.__ModuleLoader__.load({
         ),
         h('p', { style: { ...S.secondary, margin: 0 } }, t('tidyIntro')),
         all.length === 0 ? h('div', { style: S.notice }, t('nothingToTidy')) : null,
-        batch('stale', t('batchStale')),
-        batch('blank', t('batchBlank')),
-        batch('scratch', t('batchScratch')),
+        ...TIDY_BATCHES.map(batch),
         all.length > 0 && result === null
           ? h('div', null, h('button', { type: 'button', style: S.primary, disabled: busy || count === 0, onClick: () => { void run() } }, busy ? t('archiving') : fill(t('archiveN'), { n: count })))
           : null,
@@ -838,13 +1049,14 @@ window.__ModuleLoader__.load({
         }
         const waiting = collectWaiting(projects, headers)
         const waitingLeadIds = new Set(waiting.map(item => item.leadId))
-        const batches = tidyCandidates({ sessions, workspaces, waitingLeadIds, now })
+        const deliveredKeys = new Set([...headers].filter(([, header]) => header?.ok && header.stage === 'delivered').map(([key]) => key))
+        const batches = tidyCandidates({ sessions, workspaces, waitingLeadIds, deliveredKeys, now })
         const folders = emptyFolders(workspaces)
         if (view === 'tidy') return h(TidyPanel, { batches, folders, ui: crew.ui, workspacesApi: crew.workspaces, t, now, isZh, onBack: () => setView('home') })
         const recent = recentProjects(projects, now)
-        const tidyTotal = batches.stale.length + batches.blank.length + batches.scratch.length
+        const tidyTotal = TIDY_BATCHES.reduce((sum, key) => sum + batches[key].length, 0)
         const summary = [
-          tidyTotal > 0 ? fill(t('tidySummary'), { stale: batches.stale.length, blank: batches.blank.length, scratch: batches.scratch.length }) : null,
+          tidyTotal > 0 ? fill(t('tidySummary'), { n: tidyTotal }) : null,
           folders.length > 0 ? fill(t('foldersSummary'), { n: folders.length }) : null,
         ].filter(Boolean).join(t('listSeparator'))
         const open = id => { if (id) crew.ui.openSession(id) }
@@ -860,7 +1072,7 @@ window.__ModuleLoader__.load({
             return h('div', { key: project.key, style: { ...S.row, ...(index === 0 ? S.rowFirst : null) } },
               h('span', { style: { ...S.grow, flex: '0 1 auto', maxWidth: '40%' } }, project.title),
               header?.ok ? h('span', { style: S.pill }, t(`stage_${header.stage}`)) : null,
-              h('span', { style: { ...S.grow, ...S.secondary }, title: project.lastTitle ?? '' }, project.lastTitle ?? ''),
+              h('span', { style: { ...S.grow, ...S.secondary }, title: project.lastTitle ?? '' }, project.lastTitle && project.lastTitle !== project.title ? project.lastTitle : ''),
               h('span', { style: S.muted, title: new Date(project.lastAt).toLocaleString() }, relativeTime(project.lastAt, now, isZh)),
               h('button', { type: 'button', style: S.button, onClick: () => open(project.leadId ?? project.lastId) }, t('open')),
             )
@@ -891,9 +1103,9 @@ window.__ModuleLoader__.load({
       criterionDone: { color: v('label-tertiary') },
       goalLabel: { flex: '0 0 auto', whiteSpace: 'nowrap', color: v('label-tertiary'), font: font('xxs-12') },
       strip: { display: 'flex', gap: '4px', alignItems: 'center', flexWrap: 'wrap', font: font('xxs-12') },
-      step: { border: `1px solid ${v('border-l1')}`, borderRadius: '999px', padding: '2px 10px', color: v('label-tertiary'), background: 'none', font: 'inherit' },
-      stepDone: { color: v('label-secondary'), cursor: 'pointer' },
-      stepNow: { border: `1px solid ${v('border-selected')}`, color: v('label-primary'), font: font('xxs-strong-12') },
+      clamp: { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
+      files: { color: v('label-tertiary'), font: font('xxs-12') },
+      rowButton: { appearance: 'none', width: '100%', background: 'none', borderLeft: 'none', borderRight: 'none', borderBottom: 'none', textAlign: 'left', cursor: 'pointer', color: v('label-primary') },
       sep: { color: v('label-tertiary') },
       body: { display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'flex-start' },
       flow: { flex: '1 1 420px', minWidth: 0, overflowX: 'auto' },
@@ -919,71 +1131,63 @@ window.__ModuleLoader__.load({
         const sessions = props.useSessions(state => state)
         const liveTeam = typeof props.useProjection === 'function' ? props.useProjection('agentTeam') : undefined
         const liveReports = typeof props.useProjection === 'function' ? props.useProjection('crewReports') : undefined
-        const outline = typeof props.useProjection === 'function' ? props.useProjection('turnOutline') : undefined
         const [picked, setPicked] = useState(null)
         const [showDone, setShowDone] = useState(false)
         const [showCriteria, setShowCriteria] = useState(false)
+        const [showUsage, setShowUsage] = useState(false)
         const byId = sessions?.byId ?? {}
-        const context = pipelineContext(sessionId, byId)
+        // Read the folder's crew header first (through this conversation, or its lead for a
+        // member): it decides whether a conversation without a task board is a crew lead.
+        const self = byId[sessionId]
+        const home = isRoot(self) ? self : self?.parentId ? byId[self.parentId] : null
+        const homeKey = home?.cwd ? pathKey(home.cwd) : null
+        useEffect(() => {
+          if (homeKey) store.ensure(homeKey, home.cwd, home.id)
+        }, [homeKey, home, store])
+        useSyncExternalStore(store.subscribe, store.version)
+        const context = pipelineContext(sessionId, byId, cwd => store.isCrew(pathKey(cwd)))
         const leadRow = context.leadId ? byId[context.leadId] : null
         const key = leadRow?.cwd ? pathKey(leadRow.cwd) : null
-        useEffect(() => {
-          if (!key) return
-          store.ensure(key, leadRow.cwd, leadRow.id)
-        }, [key, leadRow, store])
-        useSyncExternalStore(store.subscribe, store.version)
-        const now = Date.now()
         const open = id => { if (id) crew.ui.openSession(id) }
 
-        if (context.kind === 'plain') {
-          const row = byId[sessionId]
-          const turns = Array.isArray(outline) ? outline : []
-          const first = turns.find(turn => typeof turn?.prompt === 'string' && turn.prompt.trim())?.prompt ?? row?.displayTitle ?? ''
-          return h('div', { style: P.wrap },
-            h('div', { style: P.goal }, h('span', { style: P.goalLabel }, t('saidFirst')), h('span', null, first)),
-            h('div', { style: P.strip },
-              turns.length > 0 ? h('span', null, fill(t('turnsCount'), { n: turns.length })) : null,
-              turns.length > 0 ? h('span', { style: P.sep }, '·') : null,
-              h('span', { title: row?.updatedAt ? new Date(row.updatedAt).toLocaleString() : '' }, `${t('lastActive')} ${relativeTime(row?.updatedAt ?? 0, now, isZh)}`)),
-            h('p', { style: { ...P.dt, margin: 0 } }, t('noTeam')),
-          )
-        }
+        // A plain conversation has nothing to track: one quiet line, no copy of the chat.
+        if (context.kind === 'plain') return h('div', { style: P.wrap }, h('p', { style: { ...P.dt, margin: 0 } }, t('noTeam')))
 
         const team = context.kind === 'lead' && liveTeam ? liveTeam : leadRow?.projectionValues?.agentTeam
         // Reports are folded on the lead conversation by the Host half (lib/reports.js).
         const reportSource = context.kind === 'lead' && liveReports ? liveReports : leadRow?.projectionValues?.crewReports
         // undefined = DHS has not folded the lead's log with this plugin yet (e.g. right after install or an upgrade).
         const reportsKnown = reportSource !== undefined
-        const reports = reportSource ?? {}
+        const reports = reportsByTask(team?.tasks, reportSource)
         const tasks = Array.isArray(team?.tasks) ? team.tasks : []
         const taskById = new Map(tasks.map(task => [task.id, task]))
-        const columns = taskColumns(tasks)
+        const visible = tasks.filter(task => task && task.status !== 'deleted')
+        const doneCount = visible.filter(task => task.status === 'completed').length
+        // Finished work is history: it folds away so what is moving now stays in view.
+        const columns = taskColumns(showDone ? visible : visible.filter(task => task.status !== 'completed'))
         const mine = new Set(context.kind === 'member' ? tasks.filter(task => task.ownerId === sessionId).map(task => task.id) : [])
         const selectedId = picked ?? (mine.size > 0 ? [...mine][0] : null)
         const selected = selectedId ? taskById.get(selectedId) : null
         const header = key ? store.get(key) : undefined
         const project = key ? store.project(key) : null
         const goal = project?.goal ?? null
-        const strip = header?.ok ? stageStrip(header.stage) : null
         const sheet = requirementsStatus(header, project)
         const criteria = project?.criteria ?? []
         // The sheet below already says when the requirements changed; do not list it twice.
         const waiting = header?.ok ? header.waiting.filter(item => item.code !== 'requirementsChanged').sort((a, b) => WAIT_ORDER.indexOf(a.kind) - WAIT_ORDER.indexOf(b.kind)) : []
-
-        const stripView = strip === null
-          ? h('div', { style: P.strip }, h('span', { style: P.step }, t('stageUnknown')))
-          : h('div', { style: P.strip, role: 'list' },
-            strip.done.length === 0 ? null : showDone
-              ? strip.done.map(stage => h('button', { key: stage, type: 'button', role: 'listitem', style: { ...P.step, ...P.stepDone }, onClick: () => setShowDone(false) }, `✓ ${t(`stage_${stage}`)}`))
-              : h('button', { type: 'button', role: 'listitem', style: { ...P.step, ...P.stepDone }, onClick: () => setShowDone(true) }, fill(t('doneSteps'), { n: strip.done.length })),
-            h('span', { style: P.sep }, '→'),
-            h('span', { role: 'listitem', 'aria-current': 'step', style: { ...P.step, ...P.stepNow } }, t(`stage_${strip.current}`)),
-            ...strip.upcoming.flatMap(stage => [h('span', { key: `s-${stage}`, style: P.sep }, '→'), h('span', { key: stage, role: 'listitem', style: P.step }, t(`stage_${stage}`))]),
-          )
+        const decided = deviations(tasks, reports)
+        const usage = teamUsage(byId, context.leadId, tasks)
+        // A member DHS named itself ("agent-1", no name passed) falls back to its description.
+        const who = owner => {
+          if (owner.isLead) return t('leadName')
+          if (owner.role) return `${t(`role_${owner.role}`)}（${owner.name}）`
+          const label = owner.id ? byId[owner.id]?.projectionValues?.subagent?.label : null
+          return (!owner.name || AUTO_NAME.test(owner.name)) && typeof label === 'string' && label.trim() ? label.trim() : owner.name
+        }
+        const isNone = text => !text || NONE.test(String(text).trim())
 
         const nodeView = task => {
           const state = taskState(task, taskById, reports[task.id])
-          const owner = ownerInfo(byId, task.ownerId, task.ownerName, context.leadId)
           const isMine = mine.has(task.id)
           return h('button', {
             key: task.id, type: 'button', 'aria-pressed': selectedId === task.id,
@@ -992,47 +1196,45 @@ window.__ModuleLoader__.load({
             onClick: () => setPicked(task.id),
           },
           h('span', { style: P.nodeTitle }, stripTitle(task.subject)),
-          h('span', { style: P.nodeMeta }, [t(`task_${state}`), owner.isLead ? t('leadName') : owner.name].filter(Boolean).join(' · ')))
+          h('span', { style: P.nodeMeta }, [t(`task_${state}`), who(ownerInfo(task.ownerId, task.ownerName, context.leadId))].filter(Boolean).join(' · ')))
         }
 
-        const detailView = selected == null
-          ? h('aside', { style: P.detail }, h('span', { style: P.dt }, t('detailHint')))
-          : (() => {
-            const owner = ownerInfo(byId, selected.ownerId, selected.ownerName, context.leadId)
-            const report = reports[selected.id]
-            const outputs = report?.output || (selected.writeScopes ?? []).join('；')
-            const unverified = report?.unverified && !/^无[。.]?$/.test(report.unverified) ? report.unverified : null
-            return h('aside', { style: P.detail, 'aria-label': stripTitle(selected.subject) },
-              h('strong', null, stripTitle(selected.subject)),
-              mine.has(selected.id) ? h('span', { style: P.dt }, t('yourTask')) : null,
-              h('span', { style: P.dt }, t('detailWhat')), h('p', { style: P.dd }, firstParagraph(selected.description) || t('none')),
-              h('span', { style: P.dt }, t('detailWho')), h('p', { style: P.dd }, [owner.isLead ? t('leadName') : owner.name, owner.model].filter(Boolean).join(' · ') || t('none')),
-              h('span', { style: P.dt }, t('detailOutput')), h('p', { style: P.dd }, outputs || t('none')),
-              report ? h('span', { style: P.dt }, t('detailReport')) : null,
-              report ? h('p', { style: P.dd }, [report.status, report.summary].filter(Boolean).join(' · ')) : null,
-              h('span', { style: P.dt }, t('detailEvidence')), h('p', { style: P.dd }, report?.checks || (report ? t('evidenceNotListed') : reportsKnown ? t('noReport') : t('reportsPending'))),
-              !reportsKnown && context.kind === 'member' ? h('div', null, h('button', { type: 'button', style: S.button, onClick: () => open(context.leadId) }, t('openLead'))) : null,
-              unverified ? h('span', { style: P.dt }, t('detailUnverified')) : null,
-              unverified ? h('p', { style: { ...P.dd, color: v('state-warn-label') } }, unverified) : null,
-              report?.leftover && !/^无[。.]?$/.test(report.leftover) ? h('span', { style: P.dt }, t('detailLeftover')) : null,
-              report?.leftover && !/^无[。.]?$/.test(report.leftover) ? h('p', { style: P.dd }, report.leftover) : null,
-              selected.ownerId ? h('div', null, h('button', { type: 'button', style: S.button, onClick: () => open(selected.ownerId) }, t('openChat'))) : null,
-            )
-          })()
+        const field = (label, text, style) => isNone(text) ? [] : [h('span', { key: `${label}-l`, style: P.dt }, t(label)), h('p', { key: `${label}-v`, style: { ...P.dd, ...style } }, text)]
+        const detailView = selected == null ? null : (() => {
+          const report = reports[selected.id]
+          const evidence = report?.checks || (report ? t('evidenceNotListed') : reportsKnown ? t('noReport') : t('reportsPending'))
+          return h('aside', { style: P.detail, 'aria-label': stripTitle(selected.subject) },
+            h('strong', null, stripTitle(selected.subject)),
+            mine.has(selected.id) ? h('span', { style: P.dt }, t('yourTask')) : null,
+            ...field('detailWhat', firstParagraph(selected.description)),
+            ...field('detailWho', who(ownerInfo(selected.ownerId, selected.ownerName, context.leadId))),
+            ...field('detailResult', report?.result || report?.summary),
+            h('span', { style: P.dt }, t('detailEvidence')), h('p', { style: P.dd }, evidence),
+            ...field('detailUnverified', report?.unverified, { color: v('state-warn-label') }),
+            ...field('detailDeviation', report?.deviation),
+            ...field('detailLeftover', report?.leftover),
+            ...field('detailOutput', report?.output || (selected.writeScopes ?? []).join('；'), P.files),
+            !reportsKnown && context.kind === 'member' ? h('div', null, h('button', { type: 'button', style: S.button, onClick: () => open(context.leadId) }, t('openLead'))) : null,
+            selected.ownerId ? h('div', null, h('button', { type: 'button', style: S.button, onClick: () => open(selected.ownerId) }, t('openChat'))) : null,
+          )
+        })()
+
+        // Milestone ids start at 0, so "M5" is the sixth: say "6 of 6" when PROJECT.md lists them.
+        const position = header?.ok ? milestonePosition(header.milestone, project?.milestones) : null
+        const progress = !header?.ok ? null
+          : position ? fill(t('progressMilestone'), { stage: t(`stage_${header.stage}`), ...position })
+            : header.milestone && header.milestone !== 'none' ? fill(t('progressMilestoneRaw'), { stage: t(`stage_${header.stage}`), m: header.milestone })
+              : fill(t('progressLine'), { stage: t(`stage_${header.stage}`) })
+        const usageTotal = usage ? usage.reduce((sum, item) => sum + item.tokens, 0) : 0
+        // A rotated project spreads over several lead conversations: show the folder's total too.
+        const projectTotal = projectUsage(byId, key)
+        const showProject = projectTotal !== null && projectTotal > usageTotal * 1.05
+        // Paths, commands and long technical notes stay in the lead conversation; only the count shows.
+        const plainDecided = decided.filter(item => item.plain)
+        const technicalCount = decided.length - plainDecided.length
 
         return h('div', { style: P.wrap },
-          h('section', { style: P.sheet, 'aria-label': t('goalLabel') },
-            h('div', { style: P.goal },
-              h('span', { style: P.goalLabel }, t('goalLabel')),
-              h('span', { style: { flex: '1 1 auto', minWidth: 0 } }, goal ?? t('noGoal')),
-              sheet ? h('span', { style: { ...S.pill, ...P.sheetPill[sheet] } }, sheet === 'confirmed' ? fill(t('sheetConfirmed'), { date: header.confirmed.date }) : t(sheet === 'changed' ? 'sheetChanged' : 'sheetUnconfirmed')) : null),
-            criteria.length === 0 ? null : h('button', { type: 'button', style: P.criteriaToggle, 'aria-expanded': showCriteria, onClick: () => setShowCriteria(!showCriteria) },
-              `${showCriteria ? '▾' : '▸'} ${fill(t('criteriaLine'), { done: criteria.filter(item => item.done).length, total: criteria.length })}`),
-            showCriteria ? h('ul', { style: P.criteria }, criteria.map((item, index) => h('li', { key: index, style: item.done ? P.criterionDone : null }, `${item.done ? '✓' : '○'} ${item.text}`))) : null,
-            sheet === 'changed' || sheet === 'unconfirmed' ? h('div', { style: { ...S.notice, ...(sheet === 'changed' ? P.sheetWarn : null) } },
-              h('span', { style: S.grow }, t(sheet === 'changed' ? 'sheetChangedHint' : 'sheetUnconfirmedHint')),
-              context.kind === 'member' ? h('button', { type: 'button', style: S.button, onClick: () => open(context.leadId) }, t('openLead')) : null) : null),
-          stripView,
+          // 1. What is waiting for the user comes first (DESIGN.md principle 2).
           waiting.length === 0 ? null : h('section', { style: S.block },
             h('h2', { style: S.h2 }, t('waitingTitle')),
             h('div', { style: S.card }, waiting.map((item, index) => h('div', { key: index, style: { ...S.row, ...(index === 0 ? S.rowFirst : null) } },
@@ -1040,16 +1242,55 @@ window.__ModuleLoader__.load({
               h('span', { style: S.grow, title: item.text }, item.text),
               context.kind === 'member' ? h('button', { type: 'button', style: S.button, onClick: () => open(context.leadId) }, t('handle')) : null,
             )))),
+          // 2. The goal, whether it is confirmed, and how far it is: success criteria are the progress.
+          h('section', { style: P.sheet, 'aria-label': t('goalLabel') },
+            h('div', { style: P.goal },
+              h('span', { style: P.goalLabel }, t('goalLabel')),
+              h('span', { style: { ...P.clamp, flex: '1 1 auto', minWidth: 0 }, title: goal ?? '' }, goal ?? t('noGoal')),
+              sheet ? h('span', { style: { ...S.pill, ...P.sheetPill[sheet] } }, sheet === 'confirmed' ? fill(t('sheetConfirmed'), { date: header.confirmed.date }) : t(sheet === 'changed' ? 'sheetChanged' : 'sheetUnconfirmed')) : null),
+            // How the lead raised the request (PROJECT.md "## 升级"), so the user can correct it.
+            project?.upgrade ? h('div', { style: { ...P.goal, font: font('xs-13') } },
+              h('span', { style: P.goalLabel }, t('upgradeLabel')),
+              h('span', { style: { ...P.clamp, flex: '1 1 auto', minWidth: 0, color: v('label-secondary') }, title: project.upgrade }, project.upgrade)) : null,
+            h('div', { style: P.strip },
+              criteria.length === 0 ? null : h('button', { type: 'button', style: P.criteriaToggle, 'aria-expanded': showCriteria, onClick: () => setShowCriteria(!showCriteria) },
+                `${showCriteria ? '▾' : '▸'} ${fill(t('criteriaLine'), { done: criteria.filter(item => item.done).length, total: criteria.length })}`),
+              criteria.length > 0 && progress ? h('span', { style: P.sep }, '·') : null,
+              progress ? h('span', { style: S.secondary }, progress) : null),
+            showCriteria ? h('ul', { style: P.criteria }, criteria.map((item, index) => h('li', { key: index, style: item.done ? P.criterionDone : null }, `${item.done ? '✓' : '○'} ${item.text}`))) : null,
+            sheet === 'changed' || sheet === 'unconfirmed' ? h('div', { style: { ...S.notice, ...(sheet === 'changed' ? P.sheetWarn : null) } },
+              h('span', { style: S.grow }, t(sheet === 'changed' ? 'sheetChangedHint' : 'sheetUnconfirmedHint')),
+              context.kind === 'member' ? h('button', { type: 'button', style: S.button, onClick: () => open(context.leadId) }, t('openLead')) : null) : null),
+          // 3. Calls the team made on its own while building: the unknowns the plan missed.
+          decided.length === 0 ? null : h('section', { style: S.block },
+            h('h2', { style: S.h2 }, t('decisionsTitle')),
+            plainDecided.length === 0 ? null : h('p', { style: { ...S.secondary, margin: 0 } }, t('decisionsHint')),
+            technicalCount === 0 ? null : h('p', { style: { ...S.secondary, margin: 0 } }, fill(t('decisionsTechnical'), { n: technicalCount })),
+            plainDecided.length === 0 ? null : h('div', { style: S.card }, plainDecided.map((item, index) => h('button', { key: item.taskId, type: 'button', style: { ...S.row, ...P.rowButton, ...(index === 0 ? S.rowFirst : null) }, onClick: () => setPicked(item.taskId) },
+              h('span', { style: { ...S.grow, ...P.clamp, whiteSpace: 'normal' }, title: item.text }, item.text),
+              h('span', { style: S.muted }, item.title))))),
+          // 4. Tasks still moving; finished ones fold into one link.
           h('section', { style: S.block },
-            h('h2', { style: S.h2 }, t('tasksTitle')),
-            columns.length === 0 ? h('div', { style: S.notice }, t('noTasks')) : h('div', { style: P.body },
-              h('div', { style: P.flow }, h('div', { style: P.cols }, columns.flatMap((column, index) => [
-                index > 0 ? h('span', { key: `a${index}`, style: P.arrow, 'aria-hidden': true }, '→') : null,
-                h('div', { key: `c${index}`, style: P.col(columnCards(column.length)) }, column.map(nodeView)),
-              ]))),
-              detailView,
-            ),
-          ),
+            h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '12px' } },
+              h('h2', { style: S.h2 }, t('tasksTitle')),
+              doneCount > 0 ? h('button', { type: 'button', style: S.link, onClick: () => setShowDone(!showDone) }, showDone ? t('hideDone') : fill(t('doneTasks'), { n: doneCount })) : null),
+            visible.length === 0 ? h('div', { style: S.notice }, t('noTasks'))
+              : columns.length === 0 ? h('div', { style: S.notice }, t('allDone'))
+                : h('div', { style: P.body },
+                  h('div', { style: P.flow }, h('div', { style: P.cols }, columns.flatMap((column, index) => [
+                    index > 0 ? h('span', { key: `a${index}`, style: P.arrow, 'aria-hidden': true }, '→') : null,
+                    h('div', { key: `c${index}`, style: P.col(columnCards(column.length)) }, column.map(nodeView)),
+                  ]))),
+                  detailView),
+            columns.length === 0 && detailView ? detailView : null),
+          // 5. Usage, folded: one line, the breakdown on demand.
+          usage === null ? null : h('section', { style: S.block },
+            h('button', { type: 'button', style: P.criteriaToggle, 'aria-expanded': showUsage, onClick: () => setShowUsage(!showUsage) },
+              `${showUsage ? '▾' : '▸'} ${fill(t(showProject ? 'usageProject' : 'usageLine'), { project: showProject ? formatTokens(projectTotal, isZh) : '', total: formatTokens(usageTotal, isZh), top: who(ownerInfo(usage[0].isLead ? context.leadId : usage[0].id, usage[0].name, context.leadId)), share: Math.round(usage[0].tokens / usageTotal * 100) })}`),
+            showUsage ? h('p', { style: { ...S.secondary, margin: 0 } }, t('usageHint')) : null,
+            showUsage ? h('div', { style: S.card }, usage.map((item, index) => h('div', { key: item.id, style: { ...S.row, ...(index === 0 ? S.rowFirst : null) } },
+              h('span', { style: S.grow }, who(ownerInfo(item.isLead ? context.leadId : item.id, item.name, context.leadId)) ?? t('none')),
+              h('span', { style: S.secondary }, formatTokens(item.tokens, isZh))))) : null),
         )
       }
     }

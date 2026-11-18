@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { requirementsFingerprint } from '../lib/requirements.js'
+import { requirementsFingerprint, upgradeLine } from '../lib/requirements.js'
 import { parseStateHeader } from '../lib/state.js'
 import { createPlugin } from './load-client.js'
 
@@ -118,4 +118,19 @@ test('only a changed sheet adds a waiting item', () => {
   assert.deepEqual(changed.waiting[1], { kind: 'decide', text: '', code: 'requirementsChanged' })
   assert.equal(confirmed.waiting.length, 1, 'the cached header is not mutated')
   assert.equal(client.withRequirements(undefined, client.parseProject(BASE)), undefined)
+})
+
+test('the upgrade line: first real line under "## 升级", the same in doc-check and the views', () => {
+  const cases = [
+    ['# t\n\n## 目的\n\n记账。\n\n## 升级\n\n从"做个记账命令"到"每天 10 秒记一笔、月底一眼看清花在哪"。\n- 方向：高度\n\n## 范围\n', '从"做个记账命令"到"每天 10 秒记一笔、月底一眼看清花在哪"。'],
+    ['## 升级\n\n- **从**清单到全家共用\n', '从清单到全家共用'],
+    ['## 升级\n\n从"<用户原话的要点>"到"<升级后要达成的结果>"。\n', null],
+    ['## 升级\n\n## 范围\n\n做\n', null],
+    ['## 目的\n\n记账\n', null],
+  ]
+  for (const [text, expected] of cases) {
+    assert.equal(upgradeLine(text), expected, text)
+    assert.equal(client.upgradeLine(text), upgradeLine(text), text)
+  }
+  assert.equal(client.parseProject(cases[0][0]).upgrade, cases[0][1])
 })

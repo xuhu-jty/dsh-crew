@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "crew for DeepSeek Harness: the team-workflow skill, hard brakes (commit approval, verify before stopping, state card), and the project views (waiting markers, projects page, tidy panel, pipeline)",
   "type": "module",
@@ -25,6 +25,7 @@
     "templates",
     "scripts",
     "README.md",
+    "DEVELOPING.md",
     "DESIGN.md",
     "LICENSE"
   ],

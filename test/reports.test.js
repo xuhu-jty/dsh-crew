@@ -24,7 +24,7 @@ test('the format documented in reference/team-ops.md is exactly what the parser 
   assert.ok(block, 'team-ops.md keeps one fenced example of the hand-over format')
   const example = block.replace('完成 / 阻塞 / 需要决定', '完成').replace('task-N', 'task-1')
   const report = parseReport(example)
-  for (const field of ['result', 'output', 'checks', 'docs', 'unverified', 'leftover']) {
+  for (const field of ['result', 'output', 'checks', 'deviation', 'docs', 'unverified', 'leftover']) {
     assert.ok(report[field], `documented label for ${field} is parsed`)
   }
 })
@@ -89,9 +89,33 @@ test('fold returns the same state for unrelated events', () => {
 
 test('projection definition is a summary-visible wire unit with an object schema', () => {
   assert.equal(reportsProjection.key, 'crewReports')
-  assert.equal(reportsProjection.stateVersion, 2)
+  assert.equal(reportsProjection.stateVersion, 4)
   assert.equal(reportsProjection.wire.summary, undefined, 'summary defaults to true, so the value rides along the session list')
   assert.deepEqual(reportsSchema.parse({}), {})
   assert.throws(() => reportsSchema.parse(null))
   assert.throws(() => reportsSchema.parse([]))
+})
+
+test('a member report without the task line still counts, filed under the member (seen live 11-17)', () => {
+  const live = [
+    'Agent docs sent a message: 结果：README 已改成一版没跑过命令行的人也能照着做的说明',
+    '交付：README.md；.team/docs-coverage.md',
+    '检查：`node --test` → 13/13 通过',
+    '偏离：README 不再提测试用的环境变量（面向用户用不上）',
+    '文档：README.md',
+    '未验证：无',
+    '遗留：无',
+  ].join('\n')
+  const event = text => ({ type: 'user/message', time: 5, data: { content: [{ type: 'text', text }] } })
+  const state = applyReport({}, event(live))
+  assert.equal(state['@docs'].taskId, null)
+  assert.equal(state['@docs'].deviation, 'README 不再提测试用的环境变量（面向用户用不上）')
+  assert.equal(state['@docs'].summary, 'README 已改成一版没跑过命令行的人也能照着做的说明')
+  // A progress note with fewer labels is not a report.
+  const quiet = {}
+  assert.equal(applyReport(quiet, event('Agent docs sent a message: 进度：改完一半\n结果：还在写')), quiet)
+  // The user's own message is never read as a loose report.
+  const userText = '结果：a\n交付：b\n检查：c'
+  const before = {}
+  assert.equal(applyReport(before, event(userText)), before)
 })

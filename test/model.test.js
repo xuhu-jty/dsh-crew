@@ -128,6 +128,28 @@ test('tidy batches: stale, blank, scratch, and every protected row stays out', (
   assert.equal(batches.stale[0].folder, 'harness')
 })
 
+test('tidy by purpose: leads a newer lead took over, and delivered projects', () => {
+  const sessions = { byId: {
+    m1Lead: lead('m1Lead', { updatedAt: NOW - 2 * DAY }),
+    m2Lead: lead('m2Lead', { updatedAt: NOW - 3 * 3600000 }),
+    m0Lead: lead('m0Lead', { updatedAt: NOW - 3600000 * 12 }),
+    chat: row('chat', { updatedAt: NOW - 2 * DAY }),
+    doneLead: lead('doneLead', { cwd: 'D:\\done', updatedAt: NOW - 4 * DAY }),
+    doneChat: row('doneChat', { updatedAt: NOW - 4 * DAY }),
+    doneFresh: row('doneFresh', { updatedAt: NOW - 1 * DAY }),
+  } }
+  const workspaces = { items: [
+    { path: 'D:\\dsh\\harness', title: 'harness', sessionIds: ['m1Lead', 'm2Lead', 'm0Lead', 'chat'] },
+    { path: 'D:\\Done\\', title: 'done', sessionIds: ['doneLead', 'doneChat', 'doneFresh'] },
+  ] }
+  const batches = m.tidyCandidates({ sessions, workspaces, deliveredKeys: new Set(['d:/done']), now: NOW })
+  assert.deepEqual(batches.superseded.map(e => e.id), ['m1Lead'], 'only leads older than a day, never the newest one')
+  assert.deepEqual(batches.delivered.map(e => e.id), ['doneLead', 'doneChat'], 'quiet for 3 days in a delivered project')
+  for (const kept of ['m2Lead', 'm0Lead', 'chat', 'doneFresh']) assert.ok(!Object.values(batches).flat().some(e => e.id === kept), kept)
+  const waiting = m.tidyCandidates({ sessions, workspaces, waitingLeadIds: ['m1Lead'], now: NOW })
+  assert.equal(waiting.superseded.length, 0, 'a lead with waiting items is never offered')
+})
+
 test('a scratch folder with several conversations is treated as a real folder', () => {
   const sessions = { byId: { a: row('a', { updatedAt: NOW - 12 * DAY }), b: row('b', { updatedAt: NOW - 12 * DAY }) } }
   const workspaces = { items: [{ path: 'D:\\temp', title: 'temp', sessionIds: ['a', 'b'] }] }
@@ -221,13 +243,38 @@ test('a blocked or needs-decision report, or a write-scope warning, marks the ta
   assert.equal(m.taskState(task('a', { status: 'in_progress', writeScopeWarnings: ['overlaps task-2'] }), byId), 'problem')
 })
 
-test('stage strip splits finished, current and upcoming steps', () => {
-  const strip = m.stageStrip('build')
-  assert.deepEqual(strip.done, ['intake', 'plan', 'design', 'foundation'])
-  assert.equal(strip.current, 'build')
-  assert.deepEqual(strip.upcoming, ['deliver', 'delivered'])
-  assert.deepEqual(m.stageStrip('paused'), { done: [], current: 'paused', upcoming: [] })
-  assert.equal(m.stageStrip(undefined).current, null)
+test('decisions the team made on its own: newest first, "无" left out, unknown tasks dropped', () => {
+  const tasks = [task('task-1', { subject: '[M1] 记账页' }), task('task-2', { subject: '导出' })]
+  const reports = {
+    'task-1': { taskId: 'task-1', deviation: '金额按分存整数，不用小数', at: 1 },
+    'task-2': { taskId: 'task-2', deviation: '无', at: 3 },
+    'task-9': { taskId: 'task-9', deviation: '删掉的任务', at: 4 },
+    'task-3': { taskId: 'task-3', at: 5 },
+  }
+  assert.deepEqual(m.deviations(tasks, reports), [{ taskId: 'task-1', title: '记账页', text: '金额按分存整数，不用小数', plain: true }])
+  const many = Object.fromEntries([1, 2, 3, 4, 5, 6].map(n => [`task-${n}`, { taskId: `task-${n}`, deviation: `d${n}`, at: n }]))
+  const all = [1, 2, 3, 4, 5, 6].map(n => task(`task-${n}`))
+  assert.deepEqual(m.deviations(all, many).map(d => d.text), ['d6', 'd5', 'd4', 'd3', 'd2'])
+})
+
+test('usage per conversation comes from DHS tokenUsage, biggest first', () => {
+  const usage = totals => ({ projectionValues: { tokenUsage: { totals } } })
+  const byId = {
+    L: { id: 'L', ...usage({ uncachedInputTokens: 100, cacheReadTokens: 1000, outputTokens: 10 }) },
+    a: { id: 'a', parentId: 'L', ...usage({ uncachedInputTokens: 200, cacheReadTokens: 50000, outputTokens: 20 }) },
+    b: { id: 'b', parentId: 'L' },
+    other: { id: 'other', parentId: 'X', ...usage({ cacheReadTokens: 9e9 }) },
+  }
+  const out = m.teamUsage(byId, 'L', [task('task-1', { ownerId: 'a', ownerName: 'builder-ui' })])
+  assert.deepEqual(out, [{ id: 'a', isLead: false, name: 'builder-ui', tokens: 50220 }, { id: 'L', isLead: true, name: null, tokens: 1110 }])
+  assert.equal(m.teamUsage({ L: { id: 'L' } }, 'L', []), null, 'no usage sent: the block stays hidden')
+  // The session list sends the wire view: the four totals flat, without `totals`.
+  assert.equal(m.tokensOf({ projectionValues: { tokenUsage: { uncachedInputTokens: 5, outputTokens: 1, cacheReadTokens: 100, cacheWriteTokens: 0 } } }), 106)
+  assert.equal(m.formatTokens(155284096), '1.6 亿')
+  assert.equal(m.formatTokens(35000), '3.5 万')
+  assert.equal(m.formatTokens(51415000), '5142 万')
+  assert.equal(m.formatTokens(512), '512')
+  assert.equal(m.formatTokens(12300000, false), '12.3M')
 })
 
 test('goal is the first sentence under the purpose heading', () => {
@@ -237,10 +284,14 @@ test('goal is the first sentence under the purpose heading', () => {
   assert.equal(m.parseGoal('# no goal\n'), null)
 })
 
-test('owner info prefers the member label and reads the model', () => {
-  const byId = { s: { projectionValues: { subagent: { label: '搭建热更新环境' }, modelSelection: { lastUsed: { model: 'deepseek-flash' } } } } }
-  assert.deepEqual(m.ownerInfo(byId, 's', 'builder-env', 'L'), { isLead: false, name: '搭建热更新环境', model: 'deepseek-flash' })
-  assert.deepEqual(m.ownerInfo(byId, 'L', 'lead', 'L'), { isLead: true, name: 'lead', model: null })
+test('owner info turns the member name into a role the user can read', () => {
+  assert.deepEqual(m.ownerInfo('s', 'builder-env', 'L'), { id: 's', isLead: false, role: 'builder', name: 'builder-env' })
+  assert.deepEqual(m.ownerInfo('s', 'reviewer2', 'L'), { id: 's', isLead: false, role: 'reviewer', name: 'reviewer2' })
+  assert.deepEqual(m.ownerInfo('s', 'scout-landscape', 'L'), { id: 's', isLead: false, role: 'scout', name: 'scout-landscape' })
+  assert.deepEqual(m.ownerInfo('s', 'review-architect', 'L'), { id: 's', isLead: false, role: 'reviewer', name: 'review-architect' })
+  assert.deepEqual(m.ownerInfo('s', 'helper', 'L'), { id: 's', isLead: false, role: null, name: 'helper' })
+  assert.deepEqual(m.ownerInfo('L', 'lead', 'L'), { id: 'L', isLead: true, role: null, name: 'lead' })
+  assert.deepEqual(m.ownerInfo(null, undefined, 'L'), { id: null, isLead: false, role: null, name: null })
   assert.equal(m.firstParagraph('第一段\n第二行\n\n第二段'), '第一段\n第二行')
   assert.equal(m.firstParagraph('[M0] 搭建环境。\n\n细节'), '搭建环境。')
 })
@@ -256,4 +307,57 @@ test('relative time in plain words', () => {
   assert.equal(m.relativeTime(NOW - 3 * DAY, NOW), '3 天前')
   assert.equal(m.relativeTime(0, NOW), '没有记录')
   assert.equal(m.relativeTime(NOW - 3 * DAY, NOW, false), '3 d ago')
+})
+
+test('reports are matched to tasks, including one a member sent without the task line', () => {
+  const tasks = [
+    task('task-1', { ownerName: 'reviewer' }),
+    task('task-2', { ownerName: 'docs', status: 'completed', subject: '把 README 改通俗' }),
+  ]
+  const reports = {
+    'task-1': { taskId: 'task-1', deviation: '无', at: 1 },
+    '@docs': { taskId: null, deviation: '不再提测试用的环境变量', at: 9 },
+  }
+  const byTask = m.reportsByTask(tasks, reports)
+  assert.deepEqual(Object.keys(byTask).sort(), ['task-1', 'task-2'])
+  assert.equal(byTask['task-2'].taskId, 'task-2')
+  assert.deepEqual(m.deviations(tasks, byTask), [{ taskId: 'task-2', title: '把 README 改通俗', text: '不再提测试用的环境变量', plain: true }])
+  const newer = m.reportsByTask(tasks, { ...reports, 'task-2': { taskId: 'task-2', summary: 'named', at: 20 } })
+  assert.equal(newer['task-2'].summary, 'named', 'a newer report that names the task wins')
+})
+
+test('a crew folder has a lead even when the lead never created a team task (seen live 11-17)', () => {
+  const byId = {
+    old: lead('old', { cwd: 'D:/p', updatedAt: NOW - 5 * DAY }),
+    solo: row('solo', { cwd: 'D:/P/', updatedAt: NOW - DAY }),
+    empty: row('empty', { cwd: 'D:/p', updatedAt: NOW, blank: true }),
+    rev: row('rev', { cwd: 'D:/p', origin: 'subagent', parentId: 'solo' }),
+    other: row('other', { cwd: 'D:/q', updatedAt: NOW }),
+  }
+  assert.equal(m.crewLead(byId, 'D:/p', true), 'solo', 'newest non-blank conversation in a folder with a crew header')
+  assert.equal(m.crewLead(byId, 'D:/p', false), 'old', 'without a header only a task board makes a lead')
+  assert.equal(m.crewLead(byId, 'D:/q', false), null)
+  const header = cwd => m.pathKey(cwd) === 'd:/p'
+  assert.deepEqual(m.pipelineContext('solo', byId, header), { kind: 'lead', leadId: 'solo' })
+  assert.deepEqual(m.pipelineContext('rev', byId, header), { kind: 'member', leadId: 'solo' })
+  assert.deepEqual(m.pipelineContext('old', byId, header), { kind: 'lead', leadId: 'old' }, 'an older lead with its own board still shows it')
+  assert.deepEqual(m.pipelineContext('solo', byId), { kind: 'plain', leadId: null }, 'no header: unchanged behaviour')
+})
+
+test('without a task board, member decisions still show under the member name (seen live 11-17)', () => {
+  const reports = {
+    'task-1': { taskId: 'task-1', deviation: '版本号冲突时以服务端为准', from: 'critic', at: 2 },
+    '@docs': { taskId: null, deviation: 'README 不写端口号的来历', from: 'docs', at: 3 },
+  }
+  const byTask = m.reportsByTask([], reports)
+  assert.deepEqual(m.deviations([], byTask).map(d => [d.title, d.text]), [['docs', 'README 不写端口号的来历'], ['critic', '版本号冲突时以服务端为准']])
+})
+
+test('"无" with an explanation is still no decision (seen live 11-17)', () => {
+  const tasks = [task('task-1'), task('task-2')]
+  const reports = {
+    'task-1': { taskId: 'task-1', deviation: '无（只写评审报告，没改代码）', at: 1 },
+    'task-2': { taskId: 'task-2', deviation: '无法用拖动时改成上下按钮', at: 2 },
+  }
+  assert.deepEqual(m.deviations(tasks, reports).map(d => d.taskId), ['task-2'], '"无法…" is a real decision')
 })
