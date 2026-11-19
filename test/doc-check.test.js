@@ -15,7 +15,7 @@ import { requirementsFingerprint } from '../lib/requirements.js'
 const SCRIPT = fileURLToPath(new URL('../scripts/doc-check.mjs', import.meta.url))
 const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' })
 
-const PROJECT = '# 小工具\n\n## 目的\n\n记账。\n\n## 成功标准\n\n- [ ] 记一笔 10 秒内\n\n## 范围\n\n**做**：记账\n'
+const PROJECT = '# 小工具\n\n## 目的\n\n记账。\n\n## 升级\n\n从"记账"到"10 秒记一笔、月底看清花在哪"。\n\n## 成功标准\n\n- [ ] 记一笔 10 秒内\n\n## 范围\n\n**做**：记账\n'
 const STATE = '---\r\nstage: build\r\nmilestone: M1\r\nupdated: 2026-11-17T08:00-08:00\r\nwaiting: []\r\n---\r\n# 项目状态\r\n\r\n正文不动。\r\n'
 
 function project() {
@@ -63,4 +63,37 @@ test('a project that was never confirmed passes; --confirm explains what is miss
   const result = run('--confirm', root)
   assert.equal(result.status, 1)
   assert.match(result.stdout, /没有可确认的内容/)
+})
+
+test('STATE.md may say what is waiting for the user; other live docs may not', (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(root, '.team', 'STATE.md'), STATE + '\n## 等用户\n- README 改写待用户确认\n')
+  assert.equal(run(root).status, 0, run(root).stdout)
+  fs.writeFileSync(path.join(root, 'README.md'), '# 小工具\n\n导出格式待确认\n')
+  const result = run(root)
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /README\.md:3 残留待定标记/)
+})
+
+test('a delivered project with unticked success criteria is reported', (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(root, '.team', 'STATE.md'), STATE.replace('stage: build', 'stage: delivered'))
+  const result = run(root)
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /1 条成功标准没打勾/)
+  fs.writeFileSync(path.join(root, 'PROJECT.md'), PROJECT.replace('- [ ]', '- [x]'))
+  assert.equal(run(root).status, 0, run(root).stdout)
+})
+
+test('past intake, a project without a written upgrade is reported', (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(root, 'PROJECT.md'), PROJECT.replace(/## 升级\n\n[^\n]*\n/, '## 升级\n\n从"<用户原话的要点>"到"<结果>"。\n'))
+  assert.match(run(root).stdout, /缺少写好的「升级」一节/)
+  fs.writeFileSync(path.join(root, 'PROJECT.md'), PROJECT.replace(/## 升级\n\n[^\n]*\n\n/, ''))
+  assert.match(run(root).stdout, /缺少写好的「升级」一节/)
+  fs.writeFileSync(path.join(root, 'PROJECT.md'), PROJECT)
+  assert.equal(run(root).status, 0, run(root).stdout)
 })

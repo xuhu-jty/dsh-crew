@@ -8,6 +8,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { jargonIn } from '../lib/state.js'
 import { createPlugin, loadedCount, registration } from './load-client.js'
 
 const PACKAGE = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'))
@@ -81,6 +82,10 @@ test('user-facing copy avoids internal terms (DESIGN.md §5)', () => {
   const words = JSON.stringify(state.dictionaries.crewCenter.zh).toLowerCase()
   for (const banned of ['session', 'projection', 'host', 'client', 'slot', 'poc', 'task-', 'bundle', 'payload', 'cwd', 'token']) {
     assert.ok(!words.includes(banned), `zh copy has no "${banned}"`)
+  }
+  // Same rule the brake applies to the lead's waiting sentences: no file names, paths, task ids.
+  for (const lang of ['zh', 'en']) {
+    for (const [key, text] of Object.entries(state.dictionaries.crewCenter[lang])) assert.deepEqual(jargonIn(text), [], `${lang}.${key}: ${text}`)
   }
   assert.ok(state.dictionaries.crewCenter.en.panel, 'English dictionary present')
 })

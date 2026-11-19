@@ -6,7 +6,7 @@
 //         写进 .team/STATE.md 文件头的 confirmed 字段。之后这五节被改，界面和文档检查都会提示重新确认。
 import fs from 'node:fs'
 import path from 'node:path'
-import { requirementsFingerprint } from '../lib/requirements.js'
+import { requirementsFingerprint, upgradeLine } from '../lib/requirements.js'
 import { checkStateHeader, parseStateHeader } from '../lib/state.js'
 
 const args = process.argv.slice(2)
@@ -63,8 +63,9 @@ for (const rel of liveDocs()) {
   lines.forEach((line, i) => {
     if (/^\s*```/.test(line)) inFence = !inFence
     if (inFence) return
-    // CHANGELOG 允许出现这些词（历史条目），只查链接。
-    if (rel !== 'CHANGELOG.md' && MARKERS.test(line)) problems.push(`${rel}:${i + 1} 残留待定标记：${line.trim().slice(0, 80)}`)
+    // CHANGELOG（历史条目）和 STATE.md（专门记"等用户的事"，文件头另有检查）允许出现这些词，只查链接。
+    // 实测 11-17：Lead 在 STATE.md 写"待用户确认"，把文档成员的收尾检查卡住了。
+    if (rel !== 'CHANGELOG.md' && rel !== '.team/STATE.md' && MARKERS.test(line)) problems.push(`${rel}:${i + 1} 残留待定标记：${line.trim().slice(0, 80)}`)
     for (const m of line.matchAll(/\]\(([^)\s#]+)(#[^)]*)?\)/g)) {
       const target = m[1]
       if (/^[a-z]+:/i.test(target)) continue
@@ -82,6 +83,16 @@ if (fs.existsSync(statePath)) {
   const confirmed = parseStateHeader(stateText).confirmed
   if (confirmed && fs.existsSync(projectPath) && requirementsFingerprint(fs.readFileSync(projectPath, 'utf8')) !== confirmed.fingerprint) {
     problems.push(`PROJECT.md 的需求（目的/用户与场景/成功标准/范围/假设）在 ${confirmed.date} 确认之后改过：给用户看改了什么，用户确认后运行 doc-check.mjs --confirm`)
+  }
+  // 界面用成功标准的勾选当进度；交付了却一条没勾，用户看到的是"0/10"（11-17 实测）。
+  const stage = parseStateHeader(stateText).stage
+  if ((stage === 'deliver' || stage === 'delivered') && fs.existsSync(projectPath)) {
+    const open = fs.readFileSync(projectPath, 'utf8').split(/\r?\n/).filter(line => /^\s*[-*]\s+\[ \]/.test(line)).length
+    if (open > 0) problems.push(`PROJECT.md 还有 ${open} 条成功标准没打勾：做到并有证据的只把 [ ] 改成 [x]（不要在后面加说明，那会被当成改需求）；做不到的留着，并在交付报告里写原因`)
+  }
+  // 升级是每个项目都要做的（reference/intake.md §0）；实测 11-17 两个项目一个只写了过程文件、一个没写。
+  if (stage && stage !== 'intake' && fs.existsSync(projectPath) && !upgradeLine(fs.readFileSync(projectPath, 'utf8'))) {
+    problems.push('PROJECT.md 缺少写好的「升级」一节：把用户原话升级成"从……到……"一行，再写推的方向（reference/intake.md §0），给用户看过')
   }
 }
 if (fs.existsSync(path.join(root, '.team')) && !fs.existsSync(path.join(root, 'AGENTS.local.md'))) {

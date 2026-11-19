@@ -49,3 +49,17 @@ test('strict check passes valid headers and explains each problem', () => {
   for (const fragment of ['approve', '没写内容', 'coding', 'milestone', '时区']) assert.ok(bad.some(p => p.includes(fragment)), fragment)
   assert.ok(checkStateHeader('---\nstage: plan\nmilestone: none\nupdated: 2026-11-16T20:00+08:00\n---\n').some(p => p.includes('缺少 waiting')))
 })
+
+test('waiting sentences must read plainly: no file names, paths, task ids, flags or code quotes', async () => {
+  const { jargonIn } = await import('../lib/state.js')
+  for (const plain of ['打开网页试一遍记账流程', '允许把这一批改动存档', '在 DHS 里打开团队协作开关', '选界面方向：A 简洁 / B 卡片']) assert.deepEqual(jargonIn(plain), [], plain)
+  assert.deepEqual(jargonIn('看一下 PROJECT.md 前五节'), ['文件名'])
+  assert.deepEqual(jargonIn('确认 task-3 的结果'), ['任务编号'])
+  assert.deepEqual(jargonIn('运行 `npm test`'), ['代码引号'])
+  assert.deepEqual(jargonIn('看 D:\\dsh\\harness 里的结果'), ['路径'])
+  assert.deepEqual(jargonIn('看 ./src/app 里的结果'), ['路径'])
+  assert.deepEqual(jargonIn('用 --confirm 记下'), ['命令参数'])
+  const problems = checkStateHeader('---\nstage: build\nmilestone: M1\nupdated: 2026-11-17T08:00+08:00\nwaiting:\n  - accept: 看一下 PROJECT.md 前五节\n---\n')
+  assert.equal(problems.length, 1)
+  assert.match(problems[0], /看不懂.*文件名/)
+})
