@@ -14,6 +14,7 @@ scripts/doc-check.mjs       文档检查（里程碑关卡用）；--confirm 记
 lib/guard.js                刹车（crew/guard 行）；lib/skill.js 注册 skill
 lib/center.js, reports.js   回报投影（crew 行）
 lib/state.js                STATE.md 文件头规则和"等你的事"大白话检查（刹车、文档检查、界面共用）
+lib/freshness.js            代码地图对账、过程文件残留（刹车 7/8 和 doc-check 共用）
 lib/requirements.js         需求指纹（--confirm、文档检查和界面共用）
 client.js                   界面（手写 lazy-CJS，不用构建）
 test/                       离线测试
@@ -26,7 +27,7 @@ media/                      宣传片与旧版界面截图
 npm test
 ```
 
-全部离线：刹车（模拟 DHS 的工具流水线：提交审批、授权防伪造、收工前验证、状态卡与文件头、成员预算、步数提醒）、界面纯函数（项目分组、整理批次、偏离、用量、角色名）与插槽注册、需求指纹、成员回报解析（直接解析 `reference/team-ops.md` 里的格式示例）、skill 注册、STATE.md 文件头两处解析一致。不启动 DHS、不调模型。
+全部离线：刹车（模拟 DHS 的工具流水线：提交审批、授权防伪造、收工前验证、状态卡与文件头、成员预算、步数提醒、代码地图、里程碑推进后清理）、界面纯函数（项目分组、整理批次、偏离、用量、角色名）与插槽注册、需求指纹、成员回报解析（直接解析 `reference/team-ops.md` 里的格式示例）、skill 注册、STATE.md 文件头两处解析一致。不启动 DHS、不调模型。
 
 ## 依赖的 DHS 接口（0.2.2-rc.3）
 

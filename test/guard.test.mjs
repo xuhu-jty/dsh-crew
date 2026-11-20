@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
+import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ptg-'))
 const teamProj = path.join(tmp, 'proj')
@@ -359,6 +359,66 @@ check('其他步数不提醒', () => assert.equal(stepNoticeAt(teamProj, 61), nu
 check('之后每满 60 步再强提醒', () => assert.equal(stepNoticeAt(teamProj, DEFAULT_STEP_NOTICE * 3), 'strong'))
 fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ steps: 0 }))
 check('steps: 0 关掉提醒', () => assert.equal(stepNoticeAt(teamProj, DEFAULT_STEP_NOTICE), null))
+
+console.log('== 刹车 7：代码地图跟着代码走')
+{
+  const mapFile = path.join(teamProj, '.team', 'map.md')
+  const src = path.join(teamProj, 'src')
+  fs.mkdirSync(src, { recursive: true })
+  const done = { agent: 'lead', message: '[任务 task-1] 完成\n结果：能记账了\n偏离：无' }
+  const host = makeHost()
+  await host.userSays()
+  await host.run('write', { file_path: 'src/new.js', content: 'x' }, { body: () => fs.writeFileSync(path.join(src, 'new.js'), 'x') })
+  const r1 = await host.run('send_message', done)
+  check('新建代码文件、还没有地图 → 完成回报发不出去', () => { assert.equal(r1.stage, 'guard'); assert.match(r1.reason, /代码地图/) })
+  check('收工前也拉回来', () => assert.match(host.tryStop() ?? '', /还没有代码地图/))
+  fs.writeFileSync(mapFile, '模块 · 目录 · 职责\n记账 · src/ · 记一笔\n\nsrc/old.js | 负责：旧 | 一起看：无 | 被依赖：无 | 别改错：无\n')
+  const r2 = await host.run('send_message', done)
+  check('地图里没有新文件那一行 → 仍然拦下', () => { assert.equal(r2.stage, 'guard'); assert.match(r2.reason, /src\/new\.js 没有自己那一行/) })
+  fs.appendFileSync(mapFile, 'src/new.js | 负责：记一笔 | 一起看：无 | 被依赖：addEntry | 别改错：金额用分存\n')
+  const r3 = await host.run('send_message', done)
+  check('补上那一行 → 回报放行', () => assert.equal(r3.stage, 'post'))
+  check('测试文件不进地图', () => assert.deepEqual(codeTouched('write', { file_path: 'src/new.test.js' }, teamProj), []))
+  check('只有"完成"回报才查地图', () => { assert.equal(isDoneReport('send_message', { message: '[任务 task-2] 阻塞\n结果：缺接口' }), false); assert.equal(isDoneReport('send_message', done), true) })
+
+  const del = makeHost()
+  await del.userSays()
+  fs.writeFileSync(path.join(src, 'old.js'), 'x')
+  await del.run('apply_patch', { patch: '*** Begin Patch\n*** Delete File: src/old.js\n*** End Patch' }, { body: () => fs.rmSync(path.join(src, 'old.js')) })
+  check('删了文件、地图那一行还在 → 拉回来删掉', () => assert.match(del.tryStop() ?? '', /src\/old\.js 已经删掉了/))
+  fs.writeFileSync(mapFile, fs.readFileSync(mapFile, 'utf8').replace(/src\/old\.js.*\n/, ''))
+  check('删掉那一行 → 可以收工', () => assert.equal(del.tryStop(), null))
+
+  const soft = makeHost()
+  await soft.userSays()
+  await soft.run('edit', { file_path: 'src/new.js', old_string: 'x', new_string: 'y' }, { body: () => fs.writeFileSync(path.join(src, 'new.js'), 'y') })
+  check('改了已有文件、没动地图 → 提醒确认那一行', () => assert.match(soft.tryStop() ?? '', /没动过代码地图/))
+  check('这条提醒每轮只一次', () => assert.equal(soft.tryStop(), null))
+}
+
+console.log('== 刹车 8：里程碑推进后先清旧东西')
+{
+  const header = m => `---\nstage: build\nmilestone: ${m}\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n`
+  fs.writeFileSync(statePath(teamProj), header('M1'))
+  const reviews = path.join(teamProj, '.team', 'reviews')
+  fs.mkdirSync(reviews, { recursive: true })
+  fs.writeFileSync(path.join(reviews, 'm1.md'), '评审')
+  check('里程碑中途：过程文件不算问题', () => assert.equal(advancedBetween({ stage: 'build', milestone: 'M1' }, { stage: 'build', milestone: 'M1' }), null))
+  check('进入交付也算推进', () => assert.deepEqual(advancedBetween({ stage: 'build', milestone: 'M2' }, { stage: 'deliver', milestone: 'M2' }), { from: 'M2', to: '交付' }))
+  const host = makeHost()
+  await host.userSays()
+  await host.run('write', { file_path: '.team/STATE.md', content: 'x' }, { body: () => {
+    fs.writeFileSync(statePath(teamProj), header('M2'))
+    fs.writeFileSync(cardPath(teamProj), '# 状态卡 M2')
+  } })
+  const r = host.tryStop()
+  check('推进到 M2、过程文件还在 → 拉回来清', () => assert.match(r ?? '', /从 M1 推进到了 M2[\s\S]*\.team\/reviews/))
+  const s1 = await host.run('subagent', { name: 'builder-api' })
+  check('清干净之前不让派新成员', () => { assert.equal(s1.stage, 'pre'); assert.equal(s1.decision.kind, 'deny'); assert.match(s1.decision.reason, /清完之前不能/) })
+  fs.rmSync(reviews, { recursive: true })
+  const s2 = await host.run('subagent', { name: 'builder-api' })
+  check('清掉之后可以派人', () => assert.equal(s2.stage, 'post'))
+}
 
 fs.rmSync(tmp, { recursive: true, force: true })
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

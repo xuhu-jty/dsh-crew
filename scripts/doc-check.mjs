@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // 文档检查：活文档里不应残留"待定"类标记、不应链接到不存在的文件，状态卡和 STATE.md 不应过长。
 // 用法：node doc-check.mjs <项目路径>      退出码 0 = 没问题，1 = 有问题。
+//       node doc-check.mjs --milestone <项目路径>
+//         里程碑结束、交付时运行：另外要求 .team 里的过程文件已经清掉（只留 STATE.md、guard.json、map.md 等）。
+//       代码地图 .team/map.md 每次都对账：没进地图的代码文件、指向已删除文件的行。
 //       node doc-check.mjs --confirm <项目路径>
 //         用户确认需求后运行：把 PROJECT.md 前五节（目的/用户与场景/成功标准/范围/假设）的指纹
 //         写进 .team/STATE.md 文件头的 confirmed 字段。之后这五节被改，界面和文档检查都会提示重新确认。
@@ -8,10 +11,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { requirementsFingerprint, upgradeLine } from '../lib/requirements.js'
 import { checkStateHeader, parseStateHeader } from '../lib/state.js'
+import { leftoverProcessFiles, scanMapProblems } from '../lib/freshness.js'
 
 const args = process.argv.slice(2)
 const confirmMode = args[0] === '--confirm'
-const root = path.resolve((confirmMode ? args[1] : args[0]) ?? '.')
+const milestoneMode = args[0] === '--milestone'
+const root = path.resolve((confirmMode || milestoneMode ? args[1] : args[0]) ?? '.')
 const statePath = path.join(root, '.team', 'STATE.md')
 const projectPath = path.join(root, 'PROJECT.md')
 
@@ -97,6 +102,13 @@ if (fs.existsSync(statePath)) {
 }
 if (fs.existsSync(path.join(root, '.team')) && !fs.existsSync(path.join(root, 'AGENTS.local.md'))) {
   problems.push('缺少状态卡 AGENTS.local.md（模板见 skill 的 templates/state-card.md）')
+}
+if (fs.existsSync(path.join(root, '.team'))) {
+  for (const p of scanMapProblems(root)) problems.push(`代码地图：${p}`)
+  if (milestoneMode) {
+    const left = leftoverProcessFiles(root)
+    if (left.length > 0) problems.push(`过程文件还没清：${left.join('、')}。结论并进活文档后删掉（git 里能找回）`)
+  }
 }
 
 if (problems.length === 0) {

@@ -8,7 +8,7 @@ waiting:
 ---
 # 项目状态（.team/STATE.md）
 
-> 给下一个 Lead 的交接单：只写当前事实和下一步，不写过程。150 行以内；已结束的里程碑压成履历一句话（在 PROJECT.md）。
+> 给下一个 Lead 的交接单：只写当前事实和下一步，不写过程。正文只给机器读，一行一条（`reference/docs-and-retro.md` §4）；150 行以内；已结束的里程碑压成履历一句话（在 PROJECT.md）。
 > 最关键的几条同步到状态卡 `AGENTS.local.md`（会自动注入）。改了本文件没改状态卡，插件会在收工前拦下。
 >
 > **文件头（`---` 之间）给程序读**（驾驶舱靠它画流水线），格式固定，`scripts/doc-check.mjs` 会检查：
@@ -21,7 +21,8 @@ waiting:
 
 ## 概况
 
-- 项目：<名字> · 规模：小（轻量通道）/ 中 / 大 · 受监管：是 / 否
+- 项目：<名字> · 并行宽度：1 条（small）/ 2 条（medium）/ 3 条及以上（large） · 受监管：是 / 否
+- 成员模型：provider <id> · model <id> · 支持的档位 <列表>（执行类成员传 high；`list_subagent_models` 查一次）
 - 最后更新：见文件头 `updated`
 - git：当前分支 <branch> · 未合并 worktree：<列表或"无"> · 提交方式：每次弹窗 / 里程碑整批授权
 - 上次 Lead 轮换：<时间 · 原因>（任务板快照：`.team/TASKS-snapshot.md`）
