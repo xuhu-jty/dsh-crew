@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
+import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, isReviewRequest, deliverablesTouched, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ptg-'))
 const teamProj = path.join(tmp, 'proj')
@@ -419,6 +419,92 @@ console.log('== 刹车 8：里程碑推进后先清旧东西')
   const s2 = await host.run('subagent', { name: 'builder-api' })
   check('清掉之后可以派人', () => assert.equal(s2.stage, 'post'))
 }
+
+console.log('== 刹车 9：改后复审（11-20 小说项目：改稿后没复审就交付）')
+{
+  const header = s => `---\nstage: ${s}\nmilestone: M2\nupdated: 2026-11-20T05:00-08:00\nwaiting: []\n---\n`
+  fs.writeFileSync(statePath(teamProj), header('build'))
+  fs.mkdirSync(path.join(teamProj, 'manuscript'), { recursive: true })
+  const chapter = { file_path: 'manuscript/ch001.md', content: '正文' }
+  const report = { agent: 'lead', message: '[任务 review-chapters] 完成\n结果：要改 5 条\n偏离：无' }
+  const toDeliver = { file_path: '.team/STATE.md', content: 'x' }
+  const deliverBody = () => { fs.writeFileSync(statePath(teamProj), header('deliver')); fs.writeFileSync(cardPath(teamProj), `# 卡 ${Math.random()}`) }
+
+  check('派评审类成员、给评审员发消息算请复审', () => {
+    assert.equal(isReviewRequest('subagent', { name: 'review-final' }), true)
+    assert.equal(isReviewRequest('subagent', { name: 'x', description: '定向复核本轮改稿' }), true)
+    assert.equal(isReviewRequest('send_message', { agent: 'review-chapters', message: '请复核 R1–R5' }), true)
+    assert.equal(isReviewRequest('subagent', { name: 'builder-api' }), false)
+    assert.equal(isReviewRequest('send_message', { agent: 'lead', message: '[任务 t] 完成' }), false)
+  })
+  check('过程文件、状态卡、PROJECT.md、交付报告不算交付物', () => {
+    for (const f of ['.team/STATE.md', 'AGENTS.local.md', 'PROJECT.md', 'docs/delivery.md']) assert.deepEqual(deliverablesTouched('write', { file_path: f }, teamProj), [], f)
+    assert.deepEqual(deliverablesTouched('write', chapter, teamProj), [teamProj])
+  })
+
+  const lead = makeHost()
+  const reviewer = lead.newAgent()
+  await lead.userSays()
+  await lead.run('write', chapter)
+  const p0 = await lead.run('present', { files: [{ path: 'manuscript/ch001.md' }] })
+  check('写完从没评审过 → 不能展示交付物', () => { assert.equal(p0.stage, 'guard'); assert.match(p0.reason, /还没有人复审/) })
+  await lead.run('subagent', { name: 'review-chapters' })
+  await lead.run('send_message', report, { as: reviewer })
+  const p1 = await lead.run('present', { files: [] })
+  check('评审回报回来、之后没改 → 可以展示', () => assert.equal(p1.stage, 'post'))
+  await lead.run('write', chapter)
+  const p2 = await lead.run('present', { files: [] })
+  check('按评审意见改了正文 → 又拦下', () => { assert.equal(p2.stage, 'guard'); assert.match(p2.reason, /send_message 给原来的评审员/) })
+  await lead.run('write', toDeliver, { body: deliverBody })
+  check('改完直接把阶段推到交付 → 收工前拉回来', () => assert.match(lead.tryStop() ?? '', /还没有人复审/))
+  await lead.run('send_message', { agent: 'review-chapters', message: '请定向复核 R1–R5' })
+  await lead.run('write', chapter)
+  await lead.run('send_message', report, { as: reviewer })
+  const p3 = await lead.run('present', { files: [] })
+  check('请复审之后又改了一遍 → 复审只算请求那一刻的稿子，仍拦', () => assert.equal(p3.stage, 'guard'))
+  await lead.run('send_message', { agent: 'review-chapters', message: '再看一次' })
+  const builder = lead.newAgent()
+  await lead.run('write', { file_path: 'manuscript/ch002.md', content: 'x' }, { as: builder })
+  await lead.run('send_message', { agent: 'lead', message: '[任务 task-3] 完成\n结果：写完第二章\n偏离：无' }, { as: builder })
+  const p4 = await lead.run('present', { files: [] })
+  check('改了交付物的成员发回报不算复审', () => assert.equal(p4.stage, 'guard'))
+  await lead.run('send_message', { agent: 'review-chapters', message: '第二章也看' })
+  await lead.run('send_message', report, { as: reviewer })
+  const p5 = await lead.run('present', { files: [] })
+  check('复核回来 → 放行', () => assert.equal(p5.stage, 'post'))
+  await lead.run('write', chapter)
+  await lead.run('send_message', { agent: 'reviewer-m4', message: '请复核 N1–N8' })
+  await lead.run('send_message', { agent: 'lead', message: '结果：还要改 1 处（N1）\n结论：可以交' }, { as: reviewer })
+  const p6 = await lead.run('present', { files: [] })
+  check('回报没有"[任务 …] 完成"首行、直接从"结果："开头 → 也算复核回来（11-20 实测）', () => assert.equal(p6.stage, 'post'))
+  await lead.run('write', { file_path: 'docs/era-facts.md', content: 'x' })
+  await lead.run('send_message', { agent: 'reviewer-m4', message: '请确认这 3 行' })
+  await lead.run('send_message', { agent: 'builder-x', message: '去改第四章' })
+  const p7 = await lead.run('present', { files: [] })
+  check('请评审的 Lead 自己给别人发消息 → 不算复核回来', () => assert.equal(p7.stage, 'guard'))
+  await lead.run('send_message', { agent: 'lead', message: '可以交：三行文档已确认改准' }, { as: reviewer })
+  const p8 = await lead.run('present', { files: [] })
+  check('回报只写"可以交：…" → 也算复核回来（11-20 实测）', () => assert.equal(p8.stage, 'post'))
+  fs.writeFileSync(statePath(teamProj), header('build'))
+}
+
+console.log('== 刹车 10：从不询问时开工提醒')
+{
+  const host = makeHost({ policy: 'never' })
+  await host.userSays()
+  const notes = host.inbox.filter(x => /从不询问/.test(x.m.content[0].text))
+  check('第一次开工提醒一次', () => { assert.equal(notes.length, 1); assert.match(notes[0].m.content[0].text, /git 提交、超出预算派成员都会被直接拒绝/) })
+  await host.step()
+  check('同一会话不重复提醒', () => assert.equal(host.inbox.filter(x => /从不询问/.test(x.m.content[0].text)).length, 1))
+  const asking = makeHost({ policy: 'ask' })
+  await asking.userSays()
+  check('会询问的模式不提醒', () => assert.equal(asking.inbox.filter(x => /审批策略是"从不询问"/.test(x.m.content[0].text)).length, 0))
+  check('预算满的拒绝消息指向给原评审员发消息', () => assert.match(decideSpawn('subagent', teamProj, 'never', 99).reason, /send_message 给原来的评审员/))
+}
+
+console.log('== 刹车 11：成功标准逐条打勾')
+check('replace_all 一次全打勾 → 拒绝', () => denies(decideGuard('edit', { file_path: 'PROJECT.md', old_string: '- [ ] ', new_string: '- [x] ', replace_all: true }, teamProj)))
+check('逐条打勾 → 放行', () => passes(decideGuard('edit', { file_path: 'PROJECT.md', old_string: '- [ ] 书名定稿', new_string: '- [x] 书名定稿' }, teamProj)))
 
 fs.rmSync(tmp, { recursive: true, force: true })
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
