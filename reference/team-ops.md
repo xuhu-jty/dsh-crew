@@ -28,6 +28,7 @@
 | `roles/product.md` / `roles/architect.md` | 只在方案评审员发现某一面问题特别大、需要深挖时再单独派 | 只读 |
 | `roles/designer.md` 设计师 | 有界面要新做或改；新功能要放进现有界面 | 写 `PRODUCT.md`、`DESIGN.md`、界面代码 |
 | `roles/builder.md` 实现者 | 有代码要写。按模块/写入范围可招 1–3 个 | 写自己任务的写入范围 |
+| `roles/writer.md` 写手 | 小说、剧本、文案等要读者买账的正文。相邻章节一次只派一个 | 写自己任务的章节 |
 | `roles/reviewer.md` 评审员 | 任何写代码的项目都要有（可以由一个成员兼顾全部评审） | 只读，出评审报告 |
 | `roles/qa.md` 测试验收 | 有可运行的产物需要实跑验证 | 写测试和 `.team/qa/` 证据 |
 | `roles/docs.md` 文档 | 用户可见功能多、文档多，或里程碑收尾 | 写文档 |
