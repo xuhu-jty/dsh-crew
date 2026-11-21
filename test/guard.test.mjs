@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, isReviewRequest, deliverablesTouched, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
+import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, isReviewRequest, deliverablesTouched, touchesState, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ptg-'))
 const teamProj = path.join(tmp, 'proj')
@@ -501,6 +501,13 @@ console.log('== 刹车 10：从不询问时开工提醒')
   check('会询问的模式不提醒', () => assert.equal(asking.inbox.filter(x => /审批策略是"从不询问"/.test(x.m.content[0].text)).length, 0))
   check('预算满的拒绝消息指向给原评审员发消息', () => assert.match(decideSpawn('subagent', teamProj, 'never', 99).reason, /send_message 给原来的评审员/))
 }
+
+console.log('== 只读命令提到 STATE.md 不算改（11-21 实测误拦评审员）')
+check('Get-Content .team/STATE.md → 不算改', () => assert.equal(touchesState('pwsh', { command: '(Get-Content .team/STATE.md).Count' }, teamProj), false))
+check('cat STATE.md → 不算改', () => assert.equal(touchesState('bash', { command: 'cat .team/STATE.md | head' }, teamProj), false))
+check('Set-Content 写 STATE.md → 算改', () => assert.equal(touchesState('pwsh', { command: 'Set-Content .team/STATE.md "x"' }, teamProj), true))
+check('重定向写 STATE.md → 算改', () => assert.equal(touchesState('bash', { command: 'echo x > .team/STATE.md' }, teamProj), true))
+check('doc-check --confirm → 算改', () => assert.equal(touchesState('bash', { command: 'node doc-check.mjs --confirm .' }, teamProj), true))
 
 console.log('== 刹车 11：成功标准逐条打勾')
 check('replace_all 一次全打勾 → 拒绝', () => denies(decideGuard('edit', { file_path: 'PROJECT.md', old_string: '- [ ] ', new_string: '- [x] ', replace_all: true }, teamProj)))
