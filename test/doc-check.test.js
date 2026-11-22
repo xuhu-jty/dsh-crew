@@ -126,3 +126,17 @@ test('--milestone also wants the process files gone', (t) => {
   fs.rmSync(path.join(root, '.team', 'm1-demo.md'))
   assert.equal(run('--milestone', root).status, 0)
 })
+
+test('without git commits, cleanup says archive first instead of "git can recover it" (seen live 11-21)', (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(root, '.team', 'm1-review.md'), '评审')
+  fs.mkdirSync(path.join(root, '.git', 'refs', 'heads'), { recursive: true })
+  fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+  let out = run('--milestone', root)
+  assert.match(out.stdout, /没有 git 提交，删了找不回/)
+  assert.doesNotMatch(out.stdout, /git 里能找回/)
+  fs.writeFileSync(path.join(root, '.git', 'refs', 'heads', 'main'), 'a'.repeat(40) + '\n')
+  out = run('--milestone', root)
+  assert.match(out.stdout, /git 里能找回/)
+})

@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { requirementsFingerprint, upgradeLine } from '../lib/requirements.js'
 import { checkStateHeader, parseStateHeader } from '../lib/state.js'
-import { leftoverProcessFiles, scanMapProblems } from '../lib/freshness.js'
+import { leftoverAdvice, leftoverProcessFiles, scanMapProblems } from '../lib/freshness.js'
 
 const args = process.argv.slice(2)
 const confirmMode = args[0] === '--confirm'
@@ -107,7 +107,7 @@ if (fs.existsSync(path.join(root, '.team'))) {
   for (const p of scanMapProblems(root)) problems.push(`代码地图：${p}`)
   if (milestoneMode) {
     const left = leftoverProcessFiles(root)
-    if (left.length > 0) problems.push(`过程文件还没清：${left.join('、')}。结论并进活文档后删掉（git 里能找回）`)
+    if (left.length > 0) problems.push(`过程文件还没清：${left.join('、')}。${leftoverAdvice(root)}`)
   }
 }
 
