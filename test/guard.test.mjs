@@ -303,6 +303,19 @@ check('members 可以把上限调低', () => assert.equal(memberBudget(teamProj)
   await host.run('subagent', { name: 'builder-2', prompt: 'x' }, { as: next })
   check('换里程碑重新计数', () => assert.equal(host.popups.length, 2))
 }
+{
+  fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M3\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n')
+  const host = makeHost()
+  await host.userSays()
+  const failed = { isError: true, content: [{ type: 'text', text: 'Error: child LLM `provider` and `model` must be supplied together' }] }
+  await host.run('subagent', { name: 'reviewer', prompt: 'x', model: 'm' }, { result: failed })
+  await host.run('subagent', { name: 'reviewer', prompt: 'x', model: 'm' }, { result: failed })
+  await host.run('subagent', { name: 'reviewer', prompt: 'x' })
+  await host.run('subagent', { name: 'builder', prompt: 'x' })
+  check('报错没派出去的调用不占预算', () => assert.equal(host.popups.length, 0))
+  await host.run('subagent', { name: 'qa', prompt: 'x' })
+  check('真派出去的照常计数', () => assert.equal(host.popups.length, 1))
+}
 
 console.log('== 刹车 5b：里程碑换会话提醒')
 fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'large' }))
