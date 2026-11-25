@@ -69,6 +69,12 @@ test('labelled fields can continue on following lines and are clipped', () => {
   assert.ok(report.result.length <= 400)
 })
 
+test('a label outside the protocol ends the field above it (seen live 11-21)', () => {
+  const report = parseReport('结果：十章写完\n证据：verify 通过\n偏离：第 16 章钩子改了称呼，因为排行查不到\n问题：需你定——金使未具名，按待考还是补史实库\n遗留：双评审待跑')
+  assert.equal(report.deviation, '第 16 章钩子改了称呼，因为排行查不到')
+  assert.equal(report.leftover, '双评审待跑')
+})
+
 const message = (text, time = 1000) => ({ type: 'user/message', time, data: { content: [{ type: 'text', text: 'Agent builder-env sent a message: ' }, { type: 'text', text }] } })
 
 test('fold keeps the latest report per task with sender and time', () => {
@@ -89,7 +95,7 @@ test('fold returns the same state for unrelated events', () => {
 
 test('projection definition is a summary-visible wire unit with an object schema', () => {
   assert.equal(reportsProjection.key, 'crewReports')
-  assert.equal(reportsProjection.stateVersion, 4)
+  assert.equal(reportsProjection.stateVersion, 5)
   assert.equal(reportsProjection.wire.summary, undefined, 'summary defaults to true, so the value rides along the session list')
   assert.deepEqual(reportsSchema.parse({}), {})
   assert.throws(() => reportsSchema.parse(null))
