@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, isReviewRequest, deliverablesTouched, touchesState, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
+import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, memberHardCap, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, isReviewRequest, deliverablesTouched, touchesState, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ptg-'))
 const teamProj = path.join(tmp, 'proj')
@@ -274,14 +274,19 @@ fs.writeFileSync(cardPath(teamProj), '# 状态卡')
   check('文件头正确、大白话 → 可以收工', () => assert.equal(host.tryStop(), null))
 }
 
-console.log('== 刹车 5：成员预算')
+console.log('== 刹车 5：成员预算（软上限）')
 check('默认预算 3', () => assert.equal(memberBudget(teamProj), 3))
 fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small' }))
 check('小项目预算 1', () => assert.equal(memberBudget(teamProj), 1))
+const why = { name: 'reviewer-2', prompt: '审 M26\n超预算理由：上一位评审已退场，复审需要新评审员' }
 check('没到预算不干预', () => passes(decideSpawn('subagent', teamProj, 'ask', 0)))
-check('到了预算 → 弹窗', () => kindIs(decideSpawn('subagent', teamProj, 'ask', 1), 'ask'))
-check('fork 也算', () => kindIs(decideSpawn('subagent_fork', teamProj, 'ask', 1), 'ask'))
-check('到了预算且从不询问 → 拒绝并说明', () => { const r = decideSpawn('subagent', teamProj, 'never', 1); kindIs(r, 'deny'); assert.match(r.reason, /members/) })
+check('到了预算、没写理由 → 拒绝并教怎么写', () => { const r = decideSpawn('subagent', teamProj, 'ask', 1, { name: 'x', prompt: 'x' }); kindIs(r, 'deny'); assert.match(r.reason, /超预算理由/) })
+check('到了预算、写了理由 → 放行（从不询问也放行）', () => { passes(decideSpawn('subagent', teamProj, 'never', 1, why)); passes(decideSpawn('subagent', teamProj, 'ask', 1, why)) })
+check('理由太短不算', () => kindIs(decideSpawn('subagent', teamProj, 'ask', 1, { prompt: '超预算理由：要' }), 'deny'))
+check('fork 也算', () => kindIs(decideSpawn('subagent_fork', teamProj, 'ask', 1, {}), 'deny'))
+check('小项目硬上限 2：到了就弹窗（写了理由也弹）', () => { assert.equal(memberHardCap(1), 2); kindIs(decideSpawn('subagent', teamProj, 'ask', 2, why), 'ask') })
+check('到了硬上限且从不询问 → 拒绝并说明', () => { const r = decideSpawn('subagent', teamProj, 'never', 2, why); kindIs(r, 'deny'); assert.match(r.reason, /硬上限/) })
+check('中项目硬上限 6', () => assert.equal(memberHardCap(3), 6))
 check('非 crew 项目不管', () => passes(decideSpawn('subagent', plainProj, 'ask', 9)))
 check('别的工具不管', () => passes(decideSpawn('bash', teamProj, 'ask', 9)))
 fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small', members: 5 }))
@@ -289,19 +294,27 @@ check('members 不能把上限调高（agent 自己能改这个文件）', () =>
 fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'medium', members: 2 }))
 check('members 可以把上限调低', () => assert.equal(memberBudget(teamProj), 2))
 {
-  const host = makeHost()
+  const log = path.join(teamProj, '.team', 'evidence', 'budget-log.md')
+  fs.rmSync(log, { force: true })
+  const host = makeHost({ policy: 'never' })
   await host.userSays()
   await host.run('subagent', { name: 'reviewer', prompt: 'x' })
   await host.run('subagent', { name: 'builder', prompt: 'x' })
-  check('预算内派两个不弹窗', () => assert.equal(host.popups.length, 0))
-  await host.run('subagent', { name: 'qa', prompt: 'x' })
-  check('第三个弹窗', () => assert.equal(host.popups.length, 1))
+  check('预算内派两个不拦', () => assert.equal(host.popups.length, 0))
+  const bare = await host.run('subagent', { name: 'qa', prompt: 'x' })
+  check('第三个没写理由被拒', () => assert.equal(bare.stage, 'pre'))
+  await host.run('subagent', { name: 'qa', prompt: 'x\n超预算理由：上一轮评审员已退场，需要新评审员复审' })
+  check('写了理由的第三个派出去，记进 budget-log', () => assert.match(fs.readFileSync(log, 'utf8'), /第 3 个（预算 2） qa：上一轮评审员已退场/))
   const next = host.newAgent()
-  await host.run('subagent', { name: 'docs', prompt: 'x' }, { as: next })
-  check('换会话不清零（同一里程碑）', () => assert.equal(host.popups.length, 2))
+  await host.run('subagent', { name: 'docs', prompt: '超预算理由：文档要并行补齐，现有成员在改正文' }, { as: next })
+  const capped = await host.run('subagent', { name: 'x', prompt: '超预算理由：再多一个人帮忙核对时间线' }, { as: next })
+  check('换会话不清零；到硬上限 4 且从不询问 → 拒绝', () => { assert.equal(capped.stage, 'pre'); assert.match(capped.decision.reason, /硬上限 4/) })
   fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M2\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n')
-  await host.run('subagent', { name: 'builder-2', prompt: 'x' }, { as: next })
-  check('换里程碑重新计数', () => assert.equal(host.popups.length, 2))
+  const fresh = await host.run('subagent', { name: 'builder-2', prompt: 'x' }, { as: next })
+  check('换里程碑重新计数', () => assert.equal(fresh.stage, 'post'))
+  fs.writeFileSync(statePath(teamProj), '---\nstage: 收口\nmilestone: M9\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n')
+  const odd = await host.run('subagent', { name: 'builder-3', prompt: 'x' }, { as: next })
+  check('文件头别的字段写错也照样按 milestone 计数（不会混进 none）', () => assert.equal(odd.stage, 'post'))
 }
 {
   fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M3\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n')
@@ -312,9 +325,8 @@ check('members 可以把上限调低', () => assert.equal(memberBudget(teamProj)
   await host.run('subagent', { name: 'reviewer', prompt: 'x', model: 'm' }, { result: failed })
   await host.run('subagent', { name: 'reviewer', prompt: 'x' })
   await host.run('subagent', { name: 'builder', prompt: 'x' })
-  check('报错没派出去的调用不占预算', () => assert.equal(host.popups.length, 0))
-  await host.run('subagent', { name: 'qa', prompt: 'x' })
-  check('真派出去的照常计数', () => assert.equal(host.popups.length, 1))
+  const third = await host.run('subagent', { name: 'qa', prompt: 'x' })
+  check('报错没派出去的调用不占预算；真派出去的照常计数', () => assert.equal(third.stage, 'pre'))
 }
 
 console.log('== 刹车 5b：里程碑换会话提醒')
