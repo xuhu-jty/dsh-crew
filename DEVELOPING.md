@@ -8,7 +8,7 @@
 SKILL.md                    Lead 手册：铁律、按规模定编制、找未知、上下文纪律、触发表、阶段
 reference/                  到触发点才读的细节：resume / intake / planning / foundation /
                             team-ops / gates / changes / docs-and-retro / blind-spots
-roles/*.md                  角色合同：勘察、方案评审、产品、架构、设计、实现、评审、测试、文档、合规
+roles/*.md                  角色合同（只按流程职责）：勘察、方案评审、实现、评审
 templates/*.md              状态卡、STATE.md、PROJECT.md、任务卡、成员 brief、交接单、交付报告
 scripts/doc-check.mjs       文档检查（里程碑关卡用）；--confirm 记下需求确认
 lib/guard.js                刹车（crew/guard 行）；lib/skill.js 注册 skill
