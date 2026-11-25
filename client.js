@@ -433,9 +433,9 @@ window.__ModuleLoader__.load({
     }
 
     /** Member names are "<role>-<scope>" (reference/team-ops.md); the role prefix becomes a plain word. */
-    const ROLES = ['scout', 'critic', 'product', 'architect', 'designer', 'builder', 'reviewer', 'qa', 'docs', 'compliance']
+    const ROLES = ['scout', 'critic', 'builder', 'reviewer']
     /** Names leads actually used before the naming rule (seen in real projects: "review-architect"). */
-    const ROLE_ALIASES = { review: 'reviewer', design: 'designer', build: 'builder', test: 'qa', doc: 'docs', arch: 'architect' }
+    const ROLE_ALIASES = { review: 'reviewer', build: 'builder', qa: 'reviewer', test: 'reviewer' }
     /** The name DHS gives a member when the lead passes none (seen live 11-17). */
     const AUTO_NAME = /^agent-\d+$/i
 
@@ -608,7 +608,7 @@ window.__ModuleLoader__.load({
       cancel: '取消',
       pipelineTab: '流水线',
       leadName: '负责人',
-      role: { scout: '勘察', critic: '方案评审', product: '产品评审', architect: '架构评审', designer: '设计', builder: '实现', reviewer: '评审', qa: '测试', docs: '文档', compliance: '合规' },
+      role: { scout: '勘察', critic: '方案评审', builder: '实现', reviewer: '评审' },
       none: '—',
       goalLabel: '目标',
       upgradeLabel: '升级',
@@ -705,7 +705,7 @@ window.__ModuleLoader__.load({
       cancel: 'Cancel',
       pipelineTab: 'Pipeline',
       leadName: 'Lead',
-      role: { scout: 'Scout', critic: 'Plan review', product: 'Product review', architect: 'Architecture review', designer: 'Design', builder: 'Build', reviewer: 'Review', qa: 'Testing', docs: 'Docs', compliance: 'Compliance' },
+      role: { scout: 'Scout', critic: 'Plan review', builder: 'Build', reviewer: 'Review' },
       none: '—',
       goalLabel: 'Goal',
       upgradeLabel: 'Raised to',
