@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, decideGuard, decideCommit, decideSpawn, memberBudget, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, isReviewRequest, deliverablesTouched, touchesState, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
+import { apply, decideGuard, decideCommit, stepNoticeAt, needsRotation, authPath, cardPath, statePath, commandSucceeded, codeTouched, isDoneReport, advancedBetween, isReviewRequest, deliverablesTouched, touchesState, MAX_STOP_REMINDERS, DEFAULT_STEP_NOTICE } from '../lib/guard.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ptg-'))
 const teamProj = path.join(tmp, 'proj')
@@ -274,47 +274,18 @@ fs.writeFileSync(cardPath(teamProj), '# 状态卡')
   check('文件头正确、大白话 → 可以收工', () => assert.equal(host.tryStop(), null))
 }
 
-console.log('== 刹车 5：成员预算')
-check('默认预算 3', () => assert.equal(memberBudget(teamProj), 3))
-fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small' }))
-check('小项目预算 1', () => assert.equal(memberBudget(teamProj), 1))
-check('没到预算不干预', () => passes(decideSpawn('subagent', teamProj, 'ask', 0)))
-check('到了预算 → 弹窗', () => kindIs(decideSpawn('subagent', teamProj, 'ask', 1), 'ask'))
-check('fork 也算', () => kindIs(decideSpawn('subagent_fork', teamProj, 'ask', 1), 'ask'))
-check('到了预算且从不询问 → 拒绝并说明', () => { const r = decideSpawn('subagent', teamProj, 'never', 1); kindIs(r, 'deny'); assert.match(r.reason, /members/) })
-check('非 crew 项目不管', () => passes(decideSpawn('subagent', plainProj, 'ask', 9)))
-check('别的工具不管', () => passes(decideSpawn('bash', teamProj, 'ask', 9)))
-fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small', members: 5 }))
-check('members 不能把上限调高（agent 自己能改这个文件）', () => assert.equal(memberBudget(teamProj), 1))
-fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'medium', members: 2 }))
-check('members 可以把上限调低', () => assert.equal(memberBudget(teamProj), 2))
+console.log('== 刹车 5：成员人数不设上限')
 {
-  const host = makeHost()
-  await host.userSays()
-  await host.run('subagent', { name: 'reviewer', prompt: 'x' })
-  await host.run('subagent', { name: 'builder', prompt: 'x' })
-  check('预算内派两个不弹窗', () => assert.equal(host.popups.length, 0))
-  await host.run('subagent', { name: 'qa', prompt: 'x' })
-  check('第三个弹窗', () => assert.equal(host.popups.length, 1))
-  const next = host.newAgent()
-  await host.run('subagent', { name: 'docs', prompt: 'x' }, { as: next })
-  check('换会话不清零（同一里程碑）', () => assert.equal(host.popups.length, 2))
+  fs.writeFileSync(path.join(teamProj, '.team', 'guard.json'), JSON.stringify({ size: 'small' }))
   fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M2\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n')
-  await host.run('subagent', { name: 'builder-2', prompt: 'x' }, { as: next })
-  check('换里程碑重新计数', () => assert.equal(host.popups.length, 2))
-}
-{
-  fs.writeFileSync(statePath(teamProj), '---\nstage: build\nmilestone: M3\nupdated: 2026-11-17T08:00+08:00\nwaiting: []\n---\n')
-  const host = makeHost()
+  const host = makeHost({ policy: 'never' })
   await host.userSays()
-  const failed = { isError: true, content: [{ type: 'text', text: 'Error: child LLM `provider` and `model` must be supplied together' }] }
-  await host.run('subagent', { name: 'reviewer', prompt: 'x', model: 'm' }, { result: failed })
-  await host.run('subagent', { name: 'reviewer', prompt: 'x', model: 'm' }, { result: failed })
-  await host.run('subagent', { name: 'reviewer', prompt: 'x' })
-  await host.run('subagent', { name: 'builder', prompt: 'x' })
-  check('报错没派出去的调用不占预算', () => assert.equal(host.popups.length, 0))
-  await host.run('subagent', { name: 'qa', prompt: 'x' })
-  check('真派出去的照常计数', () => assert.equal(host.popups.length, 1))
+  const names = ['scout-track', 'scout-history', 'critic-plan', 'review-chapters', 'review-history', 'review-reader', 'review-final', 'builder-a', 'builder-b']
+  const runs = []
+  for (const name of names) runs.push(await host.run('subagent', { name, prompt: 'x' }))
+  check('小项目、从不询问，一个里程碑派 9 个都放行', () => assert.ok(runs.every(r => r.stage === 'post')))
+  check('不弹窗', () => assert.equal(host.popups.length, 0))
+  check('不再写 budget-log', () => assert.equal(fs.existsSync(path.join(teamProj, '.team', 'evidence', 'budget-log.md')), false))
 }
 
 console.log('== 刹车 5b：里程碑换会话提醒')
@@ -506,13 +477,13 @@ console.log('== 刹车 10：从不询问时开工提醒')
   const host = makeHost({ policy: 'never' })
   await host.userSays()
   const notes = host.inbox.filter(x => /从不询问/.test(x.m.content[0].text))
-  check('第一次开工提醒一次', () => { assert.equal(notes.length, 1); assert.match(notes[0].m.content[0].text, /git 提交、超出预算派成员都会被直接拒绝/) })
+  check('第一次开工提醒一次', () => { assert.equal(notes.length, 1); assert.match(notes[0].m.content[0].text, /git 提交会被直接拒绝/) })
   await host.step()
   check('同一会话不重复提醒', () => assert.equal(host.inbox.filter(x => /从不询问/.test(x.m.content[0].text)).length, 1))
   const asking = makeHost({ policy: 'ask' })
   await asking.userSays()
   check('会询问的模式不提醒', () => assert.equal(asking.inbox.filter(x => /审批策略是"从不询问"/.test(x.m.content[0].text)).length, 0))
-  check('预算满的拒绝消息指向给原评审员发消息', () => assert.match(decideSpawn('subagent', teamProj, 'never', 99).reason, /send_message 给原来的评审员/))
+  check('从不询问的提醒不再提成员预算', () => assert.doesNotMatch(notes[0].m.content[0].text, /预算/))
 }
 
 console.log('== 只读命令提到 STATE.md 不算改（11-21 实测误拦评审员）')
